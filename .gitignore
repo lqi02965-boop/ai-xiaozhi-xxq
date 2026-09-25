@@ -1,0 +1,23 @@
+# 外部克隆的开源仓库，不纳入本仓库版本管理
+third_party/
+
+# Python
+__pycache__/
+venv/
+.venv/
+*.pyc
+
+# ESP-IDF 构建产物
+build/
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+
+# ZCode 工作区本地配置
+.zcode/
+.zcodeignore
