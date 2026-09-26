@@ -19,7 +19,7 @@
     "model": "deepseek-chat",
     "timeout_sec": 6,
     "max_chars": 20,
-    "persona": "语调慵懒随性，像刚睡醒一样慢悠悠，说话简短省力，偶尔打个哈欠，但交办的事都会办妥"
+    "persona": "语气慵懒淡定、慢条斯理，交代事项清楚完整、专业靠谱，不卖萌不抱怨"
   },
   "serial": {
     "port": "",

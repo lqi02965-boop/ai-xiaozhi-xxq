@@ -135,7 +135,7 @@ def main() -> None:
             sleep(3)
             bus.put(AgentEvent(kind="error", agent="demo", session_id="demo-1",
                                detail="模拟任务报错"))
-            sleep(10)   # 给 TTS+播放留足时间，避免进程提前退出打断播放
+            sleep(20)   # 给 DeepSeek+TTS+播放 留足时间，避免进程提前退出打断播放
         else:
             while True:
                 sys.stdout.flush()
