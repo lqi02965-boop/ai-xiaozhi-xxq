@@ -28,11 +28,13 @@ class TTSEngine:
     def __init__(self, cfg: dict) -> None:
         self.voice = cfg.get("edge_voice", "zh-CN-XiaoxiaoNeural")
         self.rate = cfg.get("rate", "+8%")
+        self.pitch = cfg.get("edge_pitch", "")     # 变调：如 "+20Hz"（少女）/-20Hz（御姐）
         self.sapi_rate = cfg.get("sapi_rate", 180)
         self._lock = threading.Lock()   # pyttsx3 非线程安全，串行化
         self._ffmpeg = shutil.which("ffmpeg")
-        log.info("TTS 初始化：ffmpeg=%s（A 路线 %s）",
-                 self._ffmpeg or "未安装", "启用" if self._ffmpeg else "跳过")
+        log.info("TTS 初始化：voice=%s pitch=%s ffmpeg=%s（A 路线 %s）",
+                 self.voice, self.pitch or "默认", self._ffmpeg or "未安装",
+                 "启用" if self._ffmpeg else "跳过")
 
     def synthesize(self, text: str) -> bytes | None:
         """播报词 → PCM 字节；失败返回 None（调用方降级提示音）。"""
@@ -54,8 +56,8 @@ class TTSEngine:
             import edge_tts
 
             async def _synth(out: str) -> None:
-                await edge_tts.Communicate(text, voice=self.voice,
-                                           rate=self.rate).save(out)
+                await edge_tts.Communicate(text, voice=self.voice, rate=self.rate,
+                                           pitch=self.pitch or None).save(out)
 
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 mp3_path = f.name
