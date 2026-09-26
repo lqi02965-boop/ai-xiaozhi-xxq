@@ -1,0 +1,8 @@
+# sdkconfig.defaults —— 编译默认配置
+#
+# 用途：set-target 后首次 menuconfig 的基线。v1 固件很小，
+#      默认 4MB Flash 布局即可；后续若资源不够再改分区表（V1-103）。
+# 目标芯片固定 esp32s3（本项目唯一主控）。
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
