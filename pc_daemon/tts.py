@@ -31,10 +31,29 @@ class TTSEngine:
         self.pitch = cfg.get("edge_pitch", "")     # 变调：如 "+20Hz"（少女）/-20Hz（御姐）
         self.sapi_rate = cfg.get("sapi_rate", 180)
         self._lock = threading.Lock()   # pyttsx3 非线程安全，串行化
-        self._ffmpeg = shutil.which("ffmpeg")
+        self._ffmpeg = self._find_ffmpeg(cfg.get("ffmpeg_path", ""))
         log.info("TTS 初始化：voice=%s pitch=%s ffmpeg=%s（A 路线 %s）",
                  self.voice, self.pitch or "默认", self._ffmpeg or "未安装",
                  "启用" if self._ffmpeg else "跳过")
+
+    @staticmethod
+    def _find_ffmpeg(configured: str) -> str | None:
+        """定位 ffmpeg：config 全路径 → PATH → winget Links → imageio-ffmpeg 自带二进制。"""
+        if configured and os.path.isfile(configured):
+            return configured
+        found = shutil.which("ffmpeg")
+        if found:
+            return found
+        links_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links")
+        candidate = os.path.join(links_dir, "ffmpeg.exe")
+        if os.path.isfile(candidate):
+            return candidate
+        try:
+            import imageio_ffmpeg
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            return None
 
     def synthesize(self, text: str) -> bytes | None:
         """播报词 → PCM 字节；失败返回 None（调用方降级提示音）。"""
@@ -65,7 +84,7 @@ class TTSEngine:
             import subprocess
 
             proc = subprocess.run(
-                ["ffmpeg", "-v", "error", "-i", mp3_path, "-f", "s16le",
+                [self._ffmpeg, "-v", "error", "-i", mp3_path, "-f", "s16le",
                  "-acodec", "pcm_s16le", "-ar", str(TARGET_RATE), "-ac", "1", "-"],
                 capture_output=True, timeout=20)
             os.unlink(mp3_path)

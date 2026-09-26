@@ -1,4 +1,8 @@
-"""播报词生成：DeepSeek 优先，本地词库兜底（V1-205）。"""
+"""播报词生成：DeepSeek 优先，本地词库兜底（V1-205）。
+
+人设从 config.json 的 deepseek.persona 读取——换性格只改配置，不动代码。
+本地兜底词库也按 persona 分档：御姐模式用傲娇句式，默认模式用可爱句式。
+"""
 from __future__ import annotations
 
 import logging
@@ -9,24 +13,42 @@ from .events import AgentEvent
 
 log = logging.getLogger("prompt_engine")
 
-SYSTEM_PROMPT = (
-    "你是桌面机器人小智的播报词生成器。"
+SYSTEM_PROMPT_TEMPLATE = (
+    "你是桌面机器人小智的播报词生成器。人设：{persona}。"
     "根据 Agent 工作事件，生成一句不超过20字的中文口语播报，"
-    "语气可爱、有情绪、不要引号和标点结尾。只输出这一句话。"
+    "要有情绪、符合人设、不要引号和句号结尾。只输出这一句话。"
 )
 
-LOCAL_PHRASES: dict[str, list[str]] = {
-    "done": [
-        "代码写完啦，快来看看！",
-        "任务搞定，快去验收吧！",
-        "搞定啦，夸夸我！",
-        "活儿干完了，休息一下眼睛吧！",
-    ],
-    "error": [
-        "哎呀，出错了，快看看日志！",
-        "报错啦报错啦，需要你救场！",
-        "呜呜，任务翻车了……",
-    ],
+# 无人设时的默认（可爱风）
+DEFAULT_PERSONA = "语气可爱俏皮"
+
+LOCAL_PHRASES: dict[str, dict[str, list[str]]] = {
+    "御姐": {
+        "done": [
+            "哼，这种小事，早就搞定了。",
+            "任务完成～勉为其难夸我一句吧。",
+            "搞定了。看吧，还得是我。",
+            "办妥了，下次记得先谢我。",
+        ],
+        "error": [
+            "啧，出了点小差错，过来看着。",
+            "别慌，本小姐马上查清楚。",
+            "哼，翻车了……但也只是意外。",
+        ],
+    },
+    "可爱": {
+        "done": [
+            "代码写完啦，快来看看！",
+            "任务搞定，快去验收吧！",
+            "搞定啦，夸夸我！",
+            "活儿干完了，休息一下眼睛吧！",
+        ],
+        "error": [
+            "哎呀，出错了，快看看日志！",
+            "报错啦报错啦，需要你救场！",
+            "呜呜，任务翻车了……",
+        ],
+    },
 }
 
 
@@ -37,6 +59,11 @@ class PromptEngine:
         self.timeout = cfg.get("timeout_sec", 6)
         self.max_chars = cfg.get("max_chars", 20)
         self.api_key = os.environ.get(cfg.get("api_key_env", "DEEPSEEK_API_KEY"), "")
+        self.persona = cfg.get("persona", DEFAULT_PERSONA)
+        # 本地词库分档：人设含"御姐/慵懒/高傲"走御姐句式，否则可爱句式
+        tone = "御姐" if any(w in self.persona for w in ("御姐", "慵懒", "高傲", "傲娇")) else "可爱"
+        self._phrases = LOCAL_PHRASES[tone]
+        self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(persona=self.persona)
 
     def gen(self, event: AgentEvent) -> str:
         if self.api_key:
@@ -59,7 +86,7 @@ class PromptEngine:
                 json={
                     "model": self.model,
                     "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": user},
                     ],
                     "max_tokens": 50,
@@ -75,7 +102,7 @@ class PromptEngine:
             return ""
 
     def _gen_local(self, event: AgentEvent) -> str:
-        return random.choice(LOCAL_PHRASES.get(event.kind, ["我有新消息！"]))
+        return random.choice(self._phrases.get(event.kind, ["我有新消息！"]))
 
     def _clamp(self, text: str) -> str:
         text = text.replace("\n", " ").strip()

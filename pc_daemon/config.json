@@ -18,7 +18,8 @@
     "base_url": "https://api.deepseek.com",
     "model": "deepseek-chat",
     "timeout_sec": 6,
-    "max_chars": 20
+    "max_chars": 20,
+    "persona": "语调慵懒高傲的御姐，带点傲娇，但事都办得明明白白"
   },
   "serial": {
     "port": "",
@@ -31,7 +32,8 @@
   "tts": {
     "enabled": true,
     "edge_voice": "zh-CN-XiaoxiaoNeural",
-    "rate": "+8%",
+    "rate": "-8%",
+    "edge_pitch": "-20Hz",
     "sapi_rate": 180
   },
   "sounds": {

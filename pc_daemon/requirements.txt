@@ -3,3 +3,4 @@ requests>=2.31
 edge-tts>=6.1
 
 pyttsx3>=2.90
+imageio-ffmpeg>=0.5
