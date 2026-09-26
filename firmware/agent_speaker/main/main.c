@@ -16,11 +16,9 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_app_desc.h"
+#include "cdc_link.h"
 
 static const char *TAG = "agent_speaker";
-
-/* 固件版本：每完成一个里程碑 +1，供 PC 端 status 指令核对 */
-#define FW_VERSION "v1.0.0-m1"
 
 void app_main(void)
 {
@@ -31,7 +29,12 @@ void app_main(void)
     ESP_LOGI(TAG, "编译时间: %s %s", app->date, app->time);
     ESP_LOGI(TAG, "==============================");
 
-    /* V1-105 将在此创建 CDC 接收任务；V1-104 将在此初始化播放器。
+    /* 启动 USB-CDC 指令通道（V1-105）：PC 可发 ping/play_sound/status */
+    if (cdc_link_start() != 0) {
+        ESP_LOGE(TAG, "CDC 通道启动失败");
+    }
+
+    /* V1-102/104 将在此初始化 I2S 播放器。
      * 当前骨架阶段仅保活，输出心跳日志便于确认固件活着。 */
     while (1) {
         ESP_LOGD(TAG, "alive");

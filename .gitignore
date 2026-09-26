@@ -24,3 +24,6 @@ Thumbs.db
 
 # 守护进程运行日志
 pc_daemon/logs/
+
+# TTS 合成测试产物
+pc_daemon/tts_test/

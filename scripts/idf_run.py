@@ -31,6 +31,11 @@ def build_env():
     env["IDF_PATH"] = IDF_PATH
     env["IDF_TOOLS_PATH"] = IDF_TOOLS_PATH
     env["IDF_PYTHON_ENV_PATH"] = IDF_PYTHON_ENV_PATH
+    # 构建后生成 esp_rom gdbinit 需要该变量
+    import glob as _glob
+    rom_elfs = sorted(_glob.glob(r"D:/Espressif/tools/esp-rom-elfs/*"))
+    if rom_elfs:
+        env["ESP_ROM_ELF_DIR"] = rom_elfs[-1].replace("\\", "/") + "/"
     # VS Code 扩展会设此变量；命令行下不设会导致 idf_component_manager 崩溃
     env.setdefault("ESP_IDF_VERSION", "6.1")
     import glob
