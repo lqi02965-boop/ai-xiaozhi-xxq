@@ -19,6 +19,7 @@ from .agent_monitor import AgentMonitor
 from .events import SKIP, EventBus
 from .prompt_engine import PromptEngine
 from .serial_bridge import SerialBridge
+from .tts import TTSEngine
 
 log = logging.getLogger("main")
 
@@ -59,9 +60,9 @@ def build_frame(kind: str, text: str, sounds: dict) -> dict:
     }
 
 
-def worker(bus: EventBus, engine: PromptEngine, bridge: SerialBridge,
+def worker(bus: EventBus, engine: PromptEngine, tts, bridge: SerialBridge,
            sounds: dict, stop: threading.Event) -> None:
-    """事件循环：事件 → 播报词 → 下发。"""
+    """事件循环：事件 → 播报词 → 优先 TTS 语音流，失败降级提示音。"""
     while not stop.is_set():
         item = bus.get(timeout=1.0)
         if item is SKIP:
@@ -69,9 +70,15 @@ def worker(bus: EventBus, engine: PromptEngine, bridge: SerialBridge,
         if item is None:
             break
         text = engine.gen(item)
-        frame = build_frame(item.kind, text, sounds)
-        log.info("播报 >> %s（%s）", text, frame["data"]["sound"])
-        bridge.send(frame)
+        pcm = tts.synthesize(text) if tts else None
+        if pcm:
+            log.info("播报(语音) >> %s", text)
+            bridge.send_audio_stream(pcm)
+        else:
+            log.info("播报(提示音) >> %s（%s）", text, sounds.get(item.kind))
+            bridge.send({"v": 1, "type": "play_sound", "data": {
+                "sound": sounds.get(item.kind, "chime_notice"),
+                "interrupt": True, "text": text}})
 
 
 def main() -> None:
@@ -86,6 +93,7 @@ def main() -> None:
     cfg = load_config(Path(args.config))
     bus = EventBus()
     engine = PromptEngine(cfg["deepseek"])
+    tts = TTSEngine(cfg.get("tts", {})) if cfg.get("tts", {}).get("enabled", True) else None
     bridge = SerialBridge(cfg["serial"], dry_run=args.dry_run or args.demo)
 
     monitors = []
@@ -103,7 +111,7 @@ def main() -> None:
     for m in monitors:
         m.start()
     t = threading.Thread(target=worker, daemon=True,
-                         args=(bus, engine, bridge, cfg["sounds"], stop))
+                         args=(bus, engine, tts, bridge, cfg["sounds"], stop))
     t.start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 
