@@ -99,7 +99,9 @@ def main() -> None:
     setup_logging(args.verbose)
     cfg = load_config(Path(args.config))
     bus = EventBus()
-    engine = PromptEngine(cfg["deepseek"])
+    engine = PromptEngine(cfg.get("llm", []),
+                          persona=cfg.get("persona", "语气可爱俏皮"),
+                          max_chars=cfg.get("max_chars", 20))
     tts = TTSEngine(cfg.get("tts", {})) if cfg.get("tts", {}).get("enabled", True) else None
     bridge = SerialBridge(cfg["serial"], dry_run=args.dry_run or args.demo)
 

@@ -1,4 +1,5 @@
 {
+  "persona": "语气慵懒淡定、慢条斯理，交代事项清楚完整、专业靠谱，不卖萌不抱怨",
   "log_dir": "~/.zcode/cli/log",
   "log_pattern": "zcode-*.jsonl",
   "poll_interval_sec": 2.0,
@@ -13,14 +14,25 @@
       "log_pattern": ""
     }
   },
-  "deepseek": {
-    "api_key_env": "DEEPSEEK_API_KEY",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-chat",
-    "timeout_sec": 6,
-    "max_chars": 20,
-    "persona": "语气慵懒淡定、慢条斯理，交代事项清楚完整、专业靠谱，不卖萌不抱怨"
-  },
+  "llm": [
+    {
+      "name": "zcode-glm",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key_env": "GLM_API_KEY",
+      "model": "glm-4-flash",
+      "max_tokens": 60,
+      "timeout_sec": 10,
+      "allow_zcode_fallback": true
+    },
+    {
+      "name": "deepseek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "model": "deepseek-chat",
+      "max_tokens": 50,
+      "timeout_sec": 6
+    }
+  ],
   "serial": {
     "port": "",
     "vid_pid": [["303A", "1001"], ["1A86", "55D3"], ["1A86", "55DB"]],
