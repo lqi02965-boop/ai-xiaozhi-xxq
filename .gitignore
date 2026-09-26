@@ -21,3 +21,6 @@ Thumbs.db
 # ZCode 工作区本地配置
 .zcode/
 .zcodeignore
+
+# 守护进程运行日志
+pc_daemon/logs/

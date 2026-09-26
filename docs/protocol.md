@@ -1,7 +1,13 @@
-# PC ↔ ESP32-S3 通信协议 v1
+# PC ↔ ESP32-S3 通信协议 v1.1
 
-> 任务来源：M0-05 ｜ 状态：v1 草案（联调期按实测修订）
-> 关联：M2-15（CDC 通道验证）、M2-16（JSON 解析）、M2-17（指令路由）、M3-03（PC 侧实现）
+> 任务来源：M0-05 ｜ 状态：v1.1（2026-09-26 增加音频流，适配 v1「Agent 监视语音提示器」）
+> 关联：V1-105（CDC 指令通道）、V1-302/303（音频流两端实现）
+
+## 0. v1.1 变更摘要
+
+- 新增 `play_sound`（本地提示音）与音频流三帧 `audio_start` / 原始 PCM / `audio_end`
+- `agent_event` 保留给 v2 全量版；v1 使用 `play_sound` + 音频流组合
+- 错误码新增 403（设备忙可打断语义见 3.4）
 
 ## 1. 传输层
 
@@ -48,7 +54,25 @@
 {"v":1,"type":"wake","seq":8,"data":{}}
 ```
 
-### 3.3 `ping` — 心跳
+### 3.3 `play_sound` — 本地提示音（v1 主用）
+```json
+{"v":1,"type":"play_sound","seq":9,"data":{"sound":"chime_success","interrupt":true}}
+```
+`sound` 枚举见第 7 节；`interrupt=true` 时打断当前播放立即换曲。
+
+### 3.4 音频流（v1.1 新增，TTS 语音播报用）
+**三步走**：先 JSON 宣告 → 切原始字节流 → JSON 收尾。
+
+```json
+{"v":1,"type":"audio_start","seq":10,"data":{"format":"pcm_16k_16bit_mono","bytes":152048,"interrupt":true}}
+```
+随后 PC **直接写原始 PCM 字节**（不再是 JSON、无分隔符），设备按 `bytes` 计数消费，收满后自动回到 JSON 行模式并回：
+```json
+{"v":1,"type":"ack","seq":11,"data":{"ref_seq":10,"ok":true}}
+```
+中途取消：PC 发 `{"type":"audio_stop"}`（JSON 行随时有效，设备在流中检测到该行也接受——实现上设备在流消费循环中旁路扫描 `\n` 结尾的 `audio_stop` 行）。`interrupt=true` 表示打断当前播放。
+
+### 3.5 `ping` — 心跳
 ```json
 {"v":1,"type":"ping","seq":9,"data":{}}
 ```
@@ -91,6 +115,7 @@
 | 400 | JSON 解析失败 | 丢弃该行，回 error，继续读下一行 |
 | 401 | 未知 type 或版本 | 回 error，不中断 |
 | 402 | 字段缺失/超限 | 回 error |
+| 403 | 播放器忙且未允许打断 | 回 error，PC 可重发 interrupt=true |
 | 500 | 内部执行失败 | 回 error，尽力保持服务 |
 
 ## 6. 心跳与重连约定
