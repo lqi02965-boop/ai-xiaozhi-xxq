@@ -22,7 +22,21 @@ SYSTEM_PROMPT_TEMPLATE = (
 # 无人设时的默认（可爱风）
 DEFAULT_PERSONA = "语气可爱俏皮"
 
+# 本地兜底词库按 persona 分档
 LOCAL_PHRASES: dict[str, dict[str, list[str]]] = {
+    "慵懒": {
+        "done": [
+            "……搞定啦，我去补个觉。",
+            "活儿干完了……慢悠悠来验收吧。",
+            "嗯……完成了，记得看一眼。",
+            "搞定～没费什么力气……",
+        ],
+        "error": [
+            "……出错了啊，等下再看。",
+            "嗯……有点小问题，不急哈。",
+            "翻车了……让我躺会儿再修。",
+        ],
+    },
     "御姐": {
         "done": [
             "哼，这种小事，早就搞定了。",
@@ -61,7 +75,9 @@ class PromptEngine:
         self.api_key = os.environ.get(cfg.get("api_key_env", "DEEPSEEK_API_KEY"), "")
         self.persona = cfg.get("persona", DEFAULT_PERSONA)
         # 本地词库分档：人设含"御姐/慵懒/高傲"走御姐句式，否则可爱句式
-        tone = "御姐" if any(w in self.persona for w in ("御姐", "慵懒", "高傲", "傲娇")) else "可爱"
+        tone = ("慵懒" if "慵懒" in self.persona or "睡醒" in self.persona
+                else "御姐" if any(w in self.persona for w in ("御姐", "高傲", "傲娇"))
+                else "可爱")
         self._phrases = LOCAL_PHRASES[tone]
         self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(persona=self.persona)
 

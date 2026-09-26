@@ -19,7 +19,7 @@
     "model": "deepseek-chat",
     "timeout_sec": 6,
     "max_chars": 20,
-    "persona": "语调慵懒高傲的御姐，带点傲娇，但事都办得明明白白"
+    "persona": "语调慵懒随性，像刚睡醒一样慢悠悠，说话简短省力，偶尔打个哈欠，但交办的事都会办妥"
   },
   "serial": {
     "port": "",
