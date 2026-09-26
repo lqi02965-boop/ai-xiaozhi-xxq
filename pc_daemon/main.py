@@ -20,6 +20,7 @@ from .events import SKIP, EventBus
 from .prompt_engine import PromptEngine
 from .serial_bridge import SerialBridge
 from .tts import TTSEngine
+from . import pc_player
 
 log = logging.getLogger("main")
 
@@ -61,8 +62,8 @@ def build_frame(kind: str, text: str, sounds: dict) -> dict:
 
 
 def worker(bus: EventBus, engine: PromptEngine, tts, bridge: SerialBridge,
-           sounds: dict, stop: threading.Event) -> None:
-    """事件循环：事件 → 播报词 → 优先 TTS 语音流，失败降级提示音。"""
+           sounds: dict, output_mode: str, stop: threading.Event) -> None:
+    """事件循环：事件 → 播报词 → 出声（PC 本机 / 小智设备，按配置切换）。"""
     while not stop.is_set():
         item = bus.get(timeout=1.0)
         if item is SKIP:
@@ -71,8 +72,14 @@ def worker(bus: EventBus, engine: PromptEngine, tts, bridge: SerialBridge,
             break
         text = engine.gen(item)
         pcm = tts.synthesize(text) if tts else None
+        if output_mode == "pc":
+            # 过渡模式：声音从 PC 音箱出（功放焊好后改 audio_output=device）
+            if pcm and pc_player.play_pcm(pcm):
+                log.info("播报(PC音箱) >> %s", text)
+                continue
+            log.info("PC 播放失败，降级提示音指令")
         if pcm:
-            log.info("播报(语音) >> %s", text)
+            log.info("播报(语音流→小智) >> %s", text)
             bridge.send_audio_stream(pcm)
         else:
             log.info("播报(提示音) >> %s（%s）", text, sounds.get(item.kind))
@@ -111,7 +118,8 @@ def main() -> None:
     for m in monitors:
         m.start()
     t = threading.Thread(target=worker, daemon=True,
-                         args=(bus, engine, tts, bridge, cfg["sounds"], stop))
+                         args=(bus, engine, tts, bridge, cfg["sounds"],
+                               cfg.get("audio_output", "device"), stop))
     t.start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 

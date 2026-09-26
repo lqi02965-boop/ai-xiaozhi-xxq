@@ -27,6 +27,7 @@
     "heartbeat_sec": 2,
     "reconnect_backoff_sec": [1, 2, 4, 8]
   },
+  "audio_output": "pc",
   "tts": {
     "enabled": true,
     "edge_voice": "zh-CN-XiaoxiaoNeural",
