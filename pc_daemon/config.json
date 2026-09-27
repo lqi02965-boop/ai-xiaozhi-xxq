@@ -35,17 +35,35 @@
   ],
   "serial": {
     "port": "",
-    "vid_pid": [["303A", "1001"], ["1A86", "55D3"], ["1A86", "55DB"]],
+    "vid_pid": [
+      [
+        "303A",
+        "1001"
+      ],
+      [
+        "1A86",
+        "55D3"
+      ],
+      [
+        "1A86",
+        "55DB"
+      ]
+    ],
     "baud": 115200,
     "heartbeat_sec": 2,
-    "reconnect_backoff_sec": [1, 2, 4, 8]
+    "reconnect_backoff_sec": [
+      1,
+      2,
+      4,
+      8
+    ]
   },
   "audio_output": "pc",
   "tts": {
     "enabled": true,
     "edge_voice": "zh-CN-XiaoxiaoNeural",
-    "rate": "-8%",
-    "edge_pitch": "-20Hz",
+    "rate": "+10%",
+    "edge_pitch": "-5Hz",
     "sapi_rate": 180
   },
   "sounds": {
