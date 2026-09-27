@@ -165,13 +165,18 @@ class SearchSkill:
 
     @staticmethod
     def clean_query(text: str) -> str:
-        """把口语化消息洗成搜索引擎友好的关键词。"""
+        """把口语化消息洗成搜索引擎友好的关键词（中英文之间加空格）。"""
         for w in ("我要玩", "我要去", "我要", "你去", "帮我", "给我", "请问",
                   "找一下", "找一个", "找个", "查一下", "查查", "搜一下",
                   "搜索一下", "告诉我", "一下", "麻烦"):
             text = text.replace(w, " ")
-        return " ".join(text.replace("，", " ").replace(",", " ")
-                          .replace("。", " ").split()).strip()
+        text = text.replace("，", " ").replace(",", " ").replace("。", " ")
+        text = text.replace("的", " ")                   # 的 隔开词组更利索
+        # 中英文之间补空格（三角洲行动m14 → 三角洲行动 m14）
+        import re as _re
+        text = _re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9])", r"\1 \2", text)
+        text = _re.sub(r"([A-Za-z0-9])([\u4e00-\u9fff])", r"\1 \2", text)
+        return " ".join(text.split()).strip()
 
     def search(self, query: str) -> list:
         provider = self.provider
@@ -344,13 +349,17 @@ class Companion:
                               now.strftime("%Y-%m-%d %H:%M") + " 星期" + weekday)
         self.weather = WeatherSkill(cfg)
         self.search = SearchSkill(cfg)
+        extra = tuple(cfg.get("search_keywords_extra", []))
+        if extra:
+            self.SEARCH_KEYWORDS = tuple(self.SEARCH_KEYWORDS) + extra
 
     WEATHER_KEYWORDS = ("天气", "气温", "温度", "几度", "下雨", "下雪", "降雨",
                         "热不热", "冷不冷", "穿什么", "带伞", "湿度", "风力")
     TIME_KEYWORDS = ("星期几", "礼拜几", "几号", "多少号", "日期", "今天几号",
                      "几点", "时间")
     SEARCH_KEYWORDS = ("搜索", "搜一下", "搜搜", "查一下", "查查", "帮我找",
-                       "找一下", "找一个", "找个", "攻略", "新闻", "最新消息")
+                       "找一下", "找一个", "找个", "攻略", "新闻", "最新消息",
+                       "改枪", "怎么改", "配装", "兑换码", "推荐一下")
 
     def _weather_note(self, user_text: str) -> str:
         """检测天气意图 → 返回要并入主系统提示的实时天气文本（无意图返回空）。"""
@@ -395,7 +404,7 @@ class Companion:
             "parameters": {"type": "object", "properties": {}, "required": []}}},
         {"type": "function", "function": {
             "name": "web_search",
-            "description": "联网搜索最新信息。当用户让你找/查资料、问新闻攻略游戏信息等需要互联网的问题时调用。",
+            "description": "你必须使用的联网搜索工具。只要用户提到查找/获取/搜索任何信息、攻略、代码、新闻、价格等，就必须调用此工具——你没有独立联网能力，绝不能凭记忆回答这类问题，否则就是编造。",
             "parameters": {"type": "object", "properties": {
                 "query": {"type": "string", "description": "搜索关键词"}},
                 "required": ["query"]}}},
@@ -453,6 +462,7 @@ class Companion:
                    + self.history[-cap - 1:]
 
         reply = ""
+        tool_fired = False
         try:
             for _round in range(3):                    # 工具调用最多 3 跳
                 resp = requests.post(
@@ -469,6 +479,7 @@ class Companion:
                 if not tool_calls:
                     reply = (msg.get("content") or "").strip()
                     break
+                tool_fired = True
                 messages.append(msg)                    # assistant.tool_calls
                 for tc in tool_calls:
                     fn = tc.get("function", {})
@@ -482,6 +493,30 @@ class Companion:
                     messages.append({"role": "tool",
                                      "tool_call_id": tc.get("id", ""),
                                      "content": result})
+            # 兜底：GLM 没调工具但消息有搜索意图（或出现拒答话术）→ 强制搜索重答
+            refuse = any(p in reply for p in ("无法访问互联网", "无法联网", "无法找到",
+                                              "没有找到", "无法直接提供", "无法提供具体",
+                                              "无法上网", "无法搜索"))
+            if not tool_fired and reply and (
+                    any(k in user_text for k in self.SEARCH_KEYWORDS) or refuse):
+                results = (self.search.search(self.search.clean_query(user_text))
+                           or self.search.search(user_text))
+                if results:
+                    blob = "\n".join(f"{i + 1}. {r['title']}：{r['snippet']}"
+                                     for i, r in enumerate(results))
+                    inject = ("【系统强制注入搜索结果】基于以下真实搜索结果重新回答"
+                              "你上一条没能回答的问题：\n" + blob)
+                    messages.append({"role": "user", "content": inject})
+                    resp = requests.post(
+                        f"{self.cfg['base_url'].rstrip('/')}/chat/completions",
+                        headers={"Authorization": f"Bearer {key}"},
+                        json={"model": self.cfg.get("model", "glm-4-flash"),
+                              "messages": messages,
+                              "max_tokens": 300, "temperature": 0.7},
+                        timeout=self.cfg.get("timeout_sec", 30))
+                    reply = resp.json()["choices"][0]["message"]["content"].strip()
+                    log.info("拒答兜底：已强制搜索并重答")
+
             if not reply:                               # 3 跳没出结果
                 reply = self._offline_reply(user_text) or "（我想了半天没想明白，换个说法问问？）"
         except Exception as e:

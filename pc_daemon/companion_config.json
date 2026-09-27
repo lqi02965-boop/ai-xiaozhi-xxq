@@ -21,5 +21,11 @@
   "beam_size": 3,
   "search_count": 4,
   "search_provider": "tavily",
-  "search_api_key_env": "SEARCH_API_KEY"
+  "search_api_key_env": "SEARCH_API_KEY",
+  "search_keywords_extra": [
+    "改枪码",
+    "配队",
+    "打法",
+    "灵敏度"
+  ]
 }
