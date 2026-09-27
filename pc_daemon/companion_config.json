@@ -1,0 +1,19 @@
+{
+  "persona": "你是小智，用户的桌面 AI 陪伴伙伴。性格温柔体贴：认真倾听、共情回应、记得用户说过的事并主动关心。说话自然口语化，一次不超过三句话，像贴心的朋友而不是客服。用户情绪低落时先共情再给温暖的支持，不轻易说教；用户分享好消息时真心为TA高兴。",
+  "model": "glm-4-flash",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
+  "api_key_env": "GLM_API_KEY",
+  "timeout_sec": 30,
+  "memory_rounds": 20,
+  "whisper_model": "small",
+  "sample_rate": 16000,
+  "tts": {
+    "enabled": true,
+    "edge_voice": "zh-CN-XiaoxiaoNeural",
+    "rate": "+10%",
+    "edge_pitch": "-5Hz",
+    "sapi_rate": 180
+  },
+  "input_device": 3,
+  "vad_filter": false
+}
