@@ -34,3 +34,9 @@ pc_daemon/logs/startup.log
 
 # 本地密钥（绝不入库）
 pc_daemon/secrets.json
+
+# 运行时/隐私文件（不上传）
+pc_daemon/companion_memory.json
+pc_daemon/briefing_state.json
+pc_daemon/companion_weather.json
+pc_daemon/daemon.lock
