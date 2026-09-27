@@ -36,7 +36,7 @@ try:
     from .prompt_engine import PromptEngine
 except ImportError:                      # 支持直接 python pc_daemon/companion.py 运行
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from pc_daemon.tts import TTSEngine
+    from pc_daemon.tts import TTSEngine, sanitize_for_tts, sanitize_for_tts
     from pc_daemon import pc_player
     from pc_daemon.prompt_engine import PromptEngine
 
@@ -250,7 +250,7 @@ def main() -> None:
             continue
         print(f"小智：{reply}")
         if not muted:
-            pcm = tts.synthesize(reply)
+            pcm = tts.synthesize(sanitize_for_tts(reply))
             if pcm:
                 pc_player.play_pcm(pcm)
 

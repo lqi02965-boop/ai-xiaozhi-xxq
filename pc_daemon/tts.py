@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -20,6 +21,20 @@ import wave
 import audioop
 
 log = logging.getLogger("tts")
+
+
+def sanitize_for_tts(text: str) -> str:
+    """把聊天回复净化成适合朗读的纯文本：
+    去掉 emoji（显示时保留）、括号动作描写（"（羞涩微笑）"）、markdown 符号。"""
+    if not text:
+        return text
+    text = re.sub(r"[（(][^（）()]{0,24}[)）]", "", text)          # 括号动作/插话
+    text = re.sub(r"\*[^*\n]{0,30}\*", "", text)                 # 星号动作 *拍拍肩*
+    text = re.sub(r"[*_`#>~【】\[\]]+", "", text)                # markdown/符号
+    text = re.sub(
+        r"[🀀-🫿☀-➿⬀-⯿️←-⇿〰〽㊗㊙©®]+",
+        "", text, flags=re.UNICODE)                               # emoji 区段
+    return re.sub(r"\s+", " ", text).strip()
 
 TARGET_RATE = 16000
 

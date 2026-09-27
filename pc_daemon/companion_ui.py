@@ -33,12 +33,12 @@ sys.path.insert(0, str(BASE.parent))
 try:
     from pc_daemon.companion import Companion, Recorder, Transcriber
     from pc_daemon import pc_player
-    from pc_daemon.tts import TTSEngine
+    from pc_daemon.tts import TTSEngine, sanitize_for_tts
 except ImportError:                      # 直接双击/单文件运行兜底
     sys.path.insert(0, str(BASE))
     from companion import Companion, Recorder, Transcriber
     import pc_player
-    from tts import TTSEngine
+    from tts import TTSEngine, sanitize_for_tts
 
 CONFIG_PATH = BASE / "companion_config.json"
 logging.basicConfig(level=logging.INFO,
@@ -179,7 +179,7 @@ class ChatUI:
             self.ui_q.put(("status", "💡 静音中，点🔊恢复"))
             return
         self.ui_q.put(("status", "🔊 播放中…"))
-        pcm = self.tts.synthesize(reply)
+        pcm = self.tts.synthesize(sanitize_for_tts(reply))
         if pcm:
             pc_player.play_pcm(pcm)
         self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
