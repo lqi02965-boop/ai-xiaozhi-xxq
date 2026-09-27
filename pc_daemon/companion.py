@@ -148,10 +148,15 @@ class Transcriber:
 
 
 class SearchSkill:
-    """必应（国内直连）搜索抓取——给 GLM 提供真实联网信息，杜绝编造。"""
+    """可插拔联网搜索：bing（免费攸底）/ bocha / tavily（API key）。"""
 
-    def __init__(self, count: int = 4) -> None:
-        self.count = count
+    def __init__(self, cfg) -> None:
+        if isinstance(cfg, int):            # 兼容旧的 count 直传
+            self.provider, self.count, self.cfg = "bing", cfg, {}
+        else:
+            self.provider = cfg.get("search_provider", "bing")
+            self.count = cfg.get("search_count", 4)
+            self.cfg = cfg
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -169,6 +174,46 @@ class SearchSkill:
                           .replace("。", " ").split()).strip()
 
     def search(self, query: str) -> list:
+        provider = self.provider
+        try:
+            if provider == "bocha":
+                return self._bocha(query)
+            if provider == "tavily":
+                return self._tavily(query)
+        except Exception:
+            return []                # provider 故障回退必应
+        return self._bing(query)
+
+    def _api_key(self) -> str:
+        import os as _os
+        return _os.environ.get(self.cfg.get("search_api_key_env",
+                                            "SEARCH_API_KEY"), "")
+
+    def _bocha(self, query: str) -> list:
+        import requests
+
+        r = requests.post("https://api.bochaai.com/v1/web-search",
+                          headers={"Authorization": f"Bearer {self._api_key()}"},
+                          json={"query": query, "summary": True,
+                                "count": self.count}, timeout=10)
+        r.raise_for_status()
+        out = []
+        for v in r.json().get("data", {}).get("webPages", {}).get("value", []):
+            out.append({"title": v.get("name", ""), "snippet": v.get("summary", ""),
+                        "url": v.get("url", "")})
+        return out
+
+    def _tavily(self, query: str) -> list:
+        import requests
+
+        r = requests.post("https://api.tavily.com/search",
+                          json={"api_key": self._api_key(), "query": query,
+                                "max_results": self.count}, timeout=10)
+        r.raise_for_status()
+        return [{"title": v.get("title", ""), "snippet": v.get("content", ""),
+                 "url": v.get("url", "")} for v in r.json().get("results", [])]
+
+    def _bing(self, query: str) -> list:
         import html as _html
         import re as _re
         import requests
@@ -218,14 +263,18 @@ class WeatherSkill:
         self.cache_path = BASE / "companion_weather.json"
         self._cache = None          # (时间戳, 文本)
         self._latlon = None
+        self._latlon_city = None
         import time as _t
         self._now = _t.time
 
-    def _resolve_latlon(self):
-        if self._latlon:
+    def _resolve_latlon(self, city: str | None = None):
+        city = city or self.city_cfg
+        if city is None and self._latlon:
+            return self._latlon
+        if city == self._latlon_city and self._latlon:
             return self._latlon
         import requests
-        city = self.city_cfg or _detect_city()
+        city = city or _detect_city()
         if not city:
             return None
         try:
@@ -235,15 +284,16 @@ class WeatherSkill:
             hit = r.json().get("results", [None])[0]
             if hit:
                 self._latlon = (hit["latitude"], hit["longitude"], hit["name"])
+                self._latlon_city = city
         except Exception:
             return None
         return self._latlon
 
-    def get(self) -> str:
+    def get(self, city: str | None = None) -> str:
         now = self._now()
-        if self._cache and now - self._cache[0] < 1800:
+        if self._cache and now - self._cache[0] < 1800 and                 (city or "") == (self._latlon_city or ""):
             return self._cache[1]
-        loc = self._resolve_latlon()
+        loc = self._resolve_latlon(city)
         if not loc:
             return ""
         lat, lon, name = loc
@@ -281,7 +331,7 @@ class Companion:
         self.system_prompt = (cfg["persona"] + "\n当前时间：" +
                               now.strftime("%Y-%m-%d %H:%M") + " 星期" + weekday)
         self.weather = WeatherSkill(cfg)
-        self.search = SearchSkill(cfg.get("search_count", 4))
+        self.search = SearchSkill(cfg)
 
     WEATHER_KEYWORDS = ("天气", "气温", "温度", "几度", "下雨", "下雪", "降雨",
                         "热不热", "冷不冷", "穿什么", "带伞", "湿度", "风力")
@@ -318,88 +368,120 @@ class Companion:
         self._save_memory()
         print("（记忆已清空，我们是新朋友啦）")
 
-    def chat(self, user_text: str) -> str:
-        import random
+    # ---------- 智能体：工具定义与执行 ----------
 
-        # 日期时间问题：本地直出（不让大模型算星期，实测必错）
-        if any(k in user_text for k in self.TIME_KEYWORDS):
+    TOOLS = [
+        {"type": "function", "function": {
+            "name": "get_weather",
+            "description": "查询用户所在城市的实时天气、今日温度范围。用户问天气/温度/是否下雨/要不要带伞/冷不热时调用。",
+            "parameters": {"type": "object", "properties": {
+                "city": {"type": "string", "description": "城市名，不填则用用户所在城市"}},
+                "required": []}}},
+        {"type": "function", "function": {
+            "name": "get_time",
+            "description": "获取当前日期、时间和星期。用户问时间/日期/星期几/几点时调用。",
+            "parameters": {"type": "object", "properties": {}, "required": []}}},
+        {"type": "function", "function": {
+            "name": "web_search",
+            "description": "联网搜索最新信息。当用户让你找/查资料、问新闻攻略游戏信息等需要互联网的问题时调用。",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "搜索关键词"}},
+                "required": ["query"]}}},
+    ]
+
+    def _exec_tool(self, name: str, args: dict) -> str:
+        if name == "get_weather":
+            return self.weather.get(city=args.get("city") or None) \
+                   or "天气服务暂时不可用"
+        if name == "get_time":
             from datetime import datetime
             now = datetime.now()
-            weekday = "一二三四五六日"[now.weekday()]
-            self.history.append({"role": "user", "content": user_text})
-            body = random.choice([
-                f"现在是 {now.strftime('%Y-%m-%d %H:%M')}，星期{weekday}～",
-                f"看了下时间：{now.strftime('%m月%d日')} 星期{weekday}，"
-                f"{now.strftime('%H:%M')}。",
-            ])
-            self.history.append({"role": "assistant", "content": body})
-            self._save_memory()
-            return body
+            return (now.strftime("%Y-%m-%d %H:%M") +
+                    " 星期" + "一二三四五六日"[now.weekday()])
+        if name == "web_search":
+            results = self.search.search(args.get("query", ""))
+            if not results:
+                return "搜索失败：没有找到相关结果"
+            return "\n".join(f"{i + 1}. {r['title']}：{r['snippet']}"
+                             for i, r in enumerate(results))
+        return f"未知工具 {name}"
 
-        # 天气问题：本地模板直出真实数据（不让大模型编事实）
+    # ---------- 离线兜底（无 key/断网时：关键词本地直出） ----------
+
+    def _offline_reply(self, user_text: str) -> str:
+        import random
+        from datetime import datetime
+        if any(k in user_text for k in self.TIME_KEYWORDS):
+            now = datetime.now()
+            weekday = "一二三四五六日"[now.weekday()]
+            return f"现在是 {now.strftime('%Y-%m-%d %H:%M')}，星期{weekday}～"
         if any(k in user_text for k in self.WEATHER_KEYWORDS):
             info = self.weather.get()
             if info:
                 rainy = getattr(self.weather, "last_code", 0) >= 51
-                if rainy:
-                    body = random.choice([
-                        f"刚帮你看了一眼：{info}。可能下雨，记得带伞哦～",
-                        f"嗯…{info}。看着要下雨，伞带上稳妥。",
-                    ])
-                else:
-                    body = random.choice([
-                        f"刚帮你看了一眼：{info}。不用带伞，放心出门～",
-                        f"看了下天气：{info}。天气不错，出门没问题～",
-                    ])
-                self.history.append({"role": "user", "content": user_text})
-                self.history.append({"role": "assistant", "content": body})
-                self._save_memory()
-                return body
-            # 天气服务挂了才走 GLM（会坦诚说查不到）
-            user_text += "\n【系统提示】天气服务暂不可用，请坦诚说明查不到实时天气。"
+                tail = "可能下雨，记得带伞哦～" if rainy else "不用带伞，放心出门～"
+                return f"刚帮你看了一眼：{info}。{tail}"
+            return "（天气服务暂不可用，等下再问我）"
+        return ""
 
-        # 联网搜索：检测到搜索意图 → 必应抓取真实结果 → 注入 GLM
-        if any(k in user_text for k in self.SEARCH_KEYWORDS):
-            results = (self.search.search(self.search.clean_query(user_text))
-                       or self.search.search(user_text))
-            if results:
-                blob = "\n".join(
-                    f"{i + 1}. {r['title']}：{r['snippet']}"
-                    for i, r in enumerate(results))
-                user_text += ("\n【网络搜索结果，回答必须依据这些真实信息，"
-                              "不要编造】\n" + blob)
-            else:
-                self.history.append({"role": "user", "content": user_text})
-                body = random.choice([
-                    "联网搜索暂时不可用，这个我没法帮你查，你先自己搜搜看～",
-                    "（搜索通道掉线了）这个问题要联网才能答，先自己去查一下哦。",
-                ])
-                self.history.append({"role": "assistant", "content": body})
-                self._save_memory()
-                return body
-
+    def chat(self, user_text: str) -> str:
         import requests
 
         self.history.append({"role": "user", "content": user_text})
-        cap = self.cfg.get("memory_rounds", 20) * 2
-        messages = [{"role": "system", "content": self.system_prompt}] \
-                   + self.history[-cap:]
         key = PromptEngine._resolve_key(self.cfg)
         if not key:
-            print("（未找到 GLM_API_KEY，进入本地安静模式：只记录不回应）")
+            print("（未找到 LLM API Key，进入本地安静模式：只记录不回应）")
             self.history.append({"role": "assistant",
                                  "content": "（我在线下，晚点再聊）"})
             self._save_memory()
             return ""
-        resp = requests.post(
-            f"{self.cfg['base_url'].rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={"model": self.cfg.get("model", "glm-4-flash"),
-                  "messages": messages,
-                  "max_tokens": 300, "temperature": 0.8},
-            timeout=self.cfg.get("timeout_sec", 30))
-        resp.raise_for_status()
-        reply = resp.json()["choices"][0]["message"]["content"].strip()
+
+        cap = self.cfg.get("memory_rounds", 20) * 2
+        messages = [{"role": "system", "content": self.system_prompt}] \
+                   + self.history[-cap - 1:]
+
+        reply = ""
+        try:
+            for _round in range(3):                    # 工具调用最多 3 跳
+                resp = requests.post(
+                    f"{self.cfg['base_url'].rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {key}"},
+                    json={"model": self.cfg.get("model", "glm-4-flash"),
+                          "messages": messages,
+                          "tools": self.TOOLS,
+                          "max_tokens": 300, "temperature": 0.8},
+                    timeout=self.cfg.get("timeout_sec", 30))
+                resp.raise_for_status()
+                msg = resp.json()["choices"][0]["message"]
+                tool_calls = msg.get("tool_calls")
+                if not tool_calls:
+                    reply = (msg.get("content") or "").strip()
+                    break
+                messages.append(msg)                    # assistant.tool_calls
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = self._exec_tool(fn.get("name", ""), args)
+                    log.info("智能体工具调用: %s(%s) → %s",
+                             fn.get("name"), args, result[:60])
+                    messages.append({"role": "tool",
+                                     "tool_call_id": tc.get("id", ""),
+                                     "content": result})
+            if not reply:                               # 3 跳没出结果
+                reply = self._offline_reply(user_text) or "（我想了半天没想明白，换个说法问问？）"
+        except Exception as e:
+            log.exception("智能体对话异常")
+            reply = self._offline_reply(user_text)
+            if not reply:
+                print(f"（网络开小差了：{e}）")
+                self.history.pop()                      # 移除未回应的用户消息
+                self._save_memory()
+                return ""
+        if not reply:
+            reply = "（我走神了，再说一遍？）"
         self.history.append({"role": "assistant", "content": reply})
         self._save_memory()
         return reply

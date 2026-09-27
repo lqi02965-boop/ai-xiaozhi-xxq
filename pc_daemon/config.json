@@ -78,5 +78,9 @@
     "done": "chime_success",
     "error": "chime_error",
     "approval": "chime_notice"
+  },
+  "briefing": {
+    "enabled": true,
+    "time": "07:30"
   }
 }

@@ -99,6 +99,61 @@ def acquire_lock(lock_path: Path) -> bool:
     return True
 
 
+def _briefing_loop(cfg, tts, bridge, stop: threading.Event) -> None:
+    """每日定时播报（智能体主动行为）：天气 + 今日新闻 → 语音。"""
+    bcfg = cfg.get("briefing", {})
+    if not bcfg.get("enabled", True):
+        return
+    from datetime import datetime
+    try:
+        hh, mm = (bcfg.get("time") or "07:30").split(":")[:2]
+        hh, mm = int(hh), int(mm)
+    except Exception:
+        hh, mm = 7, 30
+    state_path = Path(__file__).parent / "briefing_state.json"
+    last_done = ""
+    try:
+        last_done = state_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    try:
+        from .companion import SearchSkill, WeatherSkill
+    except Exception:
+        log.exception("播报技能导入失败，定时播报停用")
+        return
+    weather = WeatherSkill(cfg)
+    search = SearchSkill(cfg)
+    log.info("定时播报已启用: 每天 %02d:%02d", hh, mm)
+
+    while not stop.is_set():
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        if now.hour == hh and now.minute >= mm and last_done != today:
+            last_done = today
+            state_path.write_text(today, encoding="utf-8")
+            try:
+                weekday = "一二三四五六日"[now.weekday()]
+                parts = [f"早上好～今天是{now.strftime('%m月%d日')}星期{weekday}。"]
+                w = weather.get()
+                if w:
+                    parts.append("天气：" + w + "。")
+                news = search.search("今日新闻 热点")
+                if news:
+                    heads = "；".join(n["title"] for n in news[:3])
+                    parts.append("今日新闻速览：" + heads + "。")
+                text = " ".join(parts)
+                log.info("定时播报: %s", text[:100])
+                pcm = tts.synthesize(text)
+                if pcm:
+                    if cfg.get("audio_output") == "device":
+                        bridge.send_audio_stream(pcm)
+                    else:
+                        pc_player.play_pcm(pcm)
+            except Exception:
+                log.exception("定时播报失败")
+        stop.wait(15)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="小智 v1 PC 守护进程")
     ap.add_argument("--config", default=str(Path(__file__).parent / "config.json"))
@@ -143,6 +198,8 @@ def main() -> None:
                          args=(bus, engine, tts, bridge, cfg["sounds"],
                                cfg.get("audio_output", "device"), stop))
     t.start()
+    threading.Thread(target=_briefing_loop, daemon=True,
+                     args=(cfg, tts, bridge, stop)).start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 
     try:
