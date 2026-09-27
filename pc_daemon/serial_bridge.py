@@ -123,7 +123,13 @@ class SerialBridge:
                 attempt += 1
                 continue
             attempt = 0
-            self._session(port)
+            try:
+                self._session(port)
+            except Exception:
+                # 会话内任何异常（拔线/写失败）都必须回到重连循环，
+                # 否则串口线程整体死亡、永不重连（V1-401 实测教训）
+                log.exception("串口会话异常退出，%ss 后重连", 2)
+            self._stop.wait(2)
 
     def _session(self, port: str) -> None:
         """一次完整连接：打开串口、心跳、发送队列，异常退出走重连。"""
@@ -143,8 +149,12 @@ class SerialBridge:
             while not self._stop.is_set():
                 now = time.time()
                 if now - last_hb >= self.cfg.get("heartbeat_sec", 2):
-                    self._write(ser, {"v": 1, "type": "ping",
-                                      "seq": self._next_seq(), "data": {}})
+                    try:
+                        self._write(ser, {"v": 1, "type": "ping",
+                                          "seq": self._next_seq(), "data": {}})
+                    except Exception as e:
+                        log.warning("心跳写入失败（疑似断线）: %s", e)
+                        break       # 退出会话 → 上层重连
                     last_hb = now
                 try:
                     item = self._q.get(timeout=0.2)
