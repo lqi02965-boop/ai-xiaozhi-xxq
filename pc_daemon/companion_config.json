@@ -15,5 +15,6 @@
     "sapi_rate": 180
   },
   "input_device": 3,
-  "vad_filter": false
+  "vad_filter": false,
+  "city": ""
 }
