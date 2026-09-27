@@ -75,8 +75,9 @@ class TTSEngine:
             import edge_tts
 
             async def _synth(out: str) -> None:
+                # edge-tts 要求 pitch 必须形如 "+0Hz"，不能传 None/空串
                 await edge_tts.Communicate(text, voice=self.voice, rate=self.rate,
-                                           pitch=self.pitch or None).save(out)
+                                           pitch=self.pitch or "+0Hz").save(out)
 
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 mp3_path = f.name
