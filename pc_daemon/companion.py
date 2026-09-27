@@ -189,9 +189,17 @@ class SearchSkill:
         return self._bing(query)   # 永远有兜底
 
     def _api_key(self) -> str:
+        """搜索 key 双通道：环境变量优先 → pc_daemon/secrets.json 兜底。"""
         import os as _os
-        return _os.environ.get(self.cfg.get("search_api_key_env",
-                                            "SEARCH_API_KEY"), "")
+        name = self.cfg.get("search_api_key_env", "SEARCH_API_KEY")
+        key = _os.environ.get(name, "")
+        if key:
+            return key
+        try:
+            sec = json.loads((BASE / "secrets.json").read_text(encoding="utf-8"))
+            return sec.get(name, "")
+        except Exception:
+            return ""
 
     def _bocha(self, query: str) -> list:
         import requests

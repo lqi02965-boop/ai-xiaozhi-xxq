@@ -31,3 +31,6 @@ pc_daemon/tts_test/
 # 运行时锁文件
 pc_daemon/daemon.lock
 pc_daemon/logs/startup.log
+
+# 本地密钥（绝不入库）
+pc_daemon/secrets.json
