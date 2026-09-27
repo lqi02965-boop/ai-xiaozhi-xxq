@@ -6,6 +6,7 @@
  * V1-104 将把 play_sound 接到真实播放器；当前阶段先回 ack 并打日志。
  */
 #include "cdc_link.h"
+#include "i2s_player.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -16,11 +17,23 @@
 
 static const char *TAG = "cdc_link";
 
-#define CDC_RX_BUF_SIZE  1024
+#define CDC_RX_BUF_SIZE  4096   /* USB-Serial-JTAG 硬件 FIFO 仅 128B，靠驱动环形缓冲吸收突发 */
 #define CDC_TX_BUF_SIZE  1024
 #define CDC_LINE_MAX     512
+#define CDC_RAW_STALE_MS 3000   /* 音频流卡死自救：3 秒没字节就放弃并恢复通道 */
 
 static uint32_t s_seq;          /* 设备侧自增序号 */
+static volatile bool s_raw_mode = false;   /* V1-303：音频流消费中，字节直达 I2S */
+static uint32_t s_raw_total = 0;
+static uint32_t s_chunk_size = 4096;   /* 停等流控的单块大小（PC 在 audio_start 里声明） */
+static uint32_t s_raw_got = 0;
+static int s_raw_seq = 0;       /* audio_start 的对端 seq，收满后 ack 用 */
+static TickType_t s_last_rx_tick = 0;   /* 最近一次收到流字节的时刻 */
+static uint8_t s_pcm_buf[4096]; /* 停等流控的单块 PCM 缓冲 */
+static size_t s_chunk_used = 0;
+static size_t s_pcm_len = 0;
+static char s_acc[CDC_LINE_MAX + 1];   /* JSON 行缓冲（提升到文件级，audio_start 需清空） */
+static size_t s_acc_len = 0;
 
 /* ---------- 发送 ---------- */
 
@@ -80,14 +93,20 @@ static void handle_play_sound(const cJSON *root, int peer_seq)
 {
     const cJSON *data = cJSON_GetObjectItem(root, "data");
     const cJSON *sound = data ? cJSON_GetObjectItem(data, "sound") : NULL;
+    const cJSON *itp   = data ? cJSON_GetObjectItem(data, "interrupt") : NULL;
 
     if (!cJSON_IsString(sound) || sound->valuestring[0] == '\0') {
         cdc_send_error(peer_seq, 402, "missing field: sound");
         return;
     }
-    /* V1-104：此处调用 player_play(sound) 播放真实音效。
-     * 当前阶段播放器未就绪，先接受指令并记录，让 PC 端链路可独立验证。 */
-    ESP_LOGI(TAG, "play_sound: %s (player 待 V1-104 接入)", sound->valuestring);
+    if (cJSON_IsTrue(itp)) {
+        i2s_player_abort();                     /* 打断当前播放/流 */
+    }
+    if (i2s_player_busy()) {                    /* TTS 流进行中且未允许打断 */
+        cdc_send_error(peer_seq, 403, "player busy");
+        return;
+    }
+    i2s_player_play_named(sound->valuestring);  /* 阻塞至播完/被打断 */
     cdc_send_ack(peer_seq, true);
 }
 
@@ -114,6 +133,38 @@ static void handle_line(const char *line)
         cdc_send_frame("pong", NULL);
     } else if (strcmp(type->valuestring, "play_sound") == 0) {
         handle_play_sound(root, peer_seq);
+    } else if (strcmp(type->valuestring, "audio_start") == 0) {
+        const cJSON *data = cJSON_GetObjectItem(root, "data");
+        const cJSON *bytes = data ? cJSON_GetObjectItem(data, "bytes") : NULL;
+        if (!cJSON_IsNumber(bytes)) {
+            cdc_send_error(peer_seq, 402, "missing field: bytes");
+            return;
+        }
+        const cJSON *chunk = data ? cJSON_GetObjectItem(data, "chunk") : NULL;
+        if (cJSON_IsNumber(chunk) && chunk->valuedouble > 0 &&
+            chunk->valuedouble <= sizeof(s_pcm_buf)) {
+            s_chunk_size = (uint32_t)chunk->valuedouble;
+        } else {
+            s_chunk_size = 512;   /* PC 未声明时用保守值 */
+        }
+        if (cJSON_IsTrue(cJSON_GetObjectItem(data, "interrupt"))) {
+            i2s_player_abort();
+        }
+        if (i2s_player_stream_begin((uint32_t)bytes->valuedouble) != ESP_OK) {
+            cdc_send_error(peer_seq, 403, "player busy");
+            return;
+        }
+        s_raw_total = (uint32_t)bytes->valuedouble;
+        s_raw_got = 0;
+        s_pcm_len = 0;
+        s_raw_seq = peer_seq;
+        s_last_rx_tick = xTaskGetTickCount();   /* 重置停滞计时（否则开机 3s 后必误杀） */
+        s_acc_len = 0;          /* 清掉半行残留，防止 PCM 字节混进行缓冲 */
+        s_raw_mode = true;      /* 之后字节直达 I2S，不再当 JSON 解析 */
+        ESP_LOGI(TAG, "audio_start: %u bytes", (unsigned)s_raw_total);
+    } else if (strcmp(type->valuestring, "audio_stop") == 0) {
+        i2s_player_abort();
+        cdc_send_ack(peer_seq, true);
     } else if (strcmp(type->valuestring, "status") == 0) {
         cJSON *data = cJSON_CreateObject();
         cJSON_AddStringToObject(data, "state", "idle");
@@ -132,33 +183,82 @@ static void handle_line(const char *line)
 
 static void cdc_rx_task(void *arg)
 {
-    char acc[CDC_LINE_MAX + 1];
-    size_t acc_len = 0;
-    char buf[64];
+    char buf[512];
+    TickType_t last_raw_rx = 0;
 
-    ESP_LOGI(TAG, "CDC 指令通道就绪（协议 v1.1）");
+    ESP_LOGI(TAG, "CDC 指令通道就绪（协议 v1.1，音频流已启用）");
     while (1) {
-        int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(50));
+        int n = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(20));
         for (int i = 0; i < n; i++) {
             char c = buf[i];
+
+            /* V1-303 停等模式：攒满一块（或收完全部）→ 写 I2S → ack，PC 再发下一块。
+             * 流控由 ack 同步，天然无溢出。 */
+            if (s_raw_mode) {
+                s_last_rx_tick = xTaskGetTickCount();
+                s_pcm_buf[s_pcm_len++] = (uint8_t)c;
+                s_raw_got++;
+                if (s_raw_got >= s_raw_total) {
+                    /* 全部收完：写入最后一块，结束会话，回最终 ack */
+                    int w = i2s_player_feed_pcm(s_pcm_buf, s_pcm_len);
+                    s_pcm_len = 0;
+                    i2s_player_stream_end();
+                    s_raw_mode = false;
+                    cJSON *fin = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(fin, "ref_seq", s_raw_seq);
+                    cJSON_AddBoolToObject(fin, "ok", w >= 0);
+                    cJSON_AddNumberToObject(fin, "got", (double)s_raw_got);
+                    cdc_send_frame("ack", fin);
+                    ESP_LOGI(TAG, "audio stream 完成: %u bytes", (unsigned)s_raw_got);
+                    continue;
+                }
+                bool chunk_done = (s_pcm_len >= s_chunk_size);
+                if (chunk_done) {
+                    i2s_player_feed_pcm(s_pcm_buf, s_pcm_len);
+                    s_pcm_len = 0;
+                    cJSON *ack_data = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(ack_data, "ref_seq", s_raw_seq);
+                    cJSON_AddBoolToObject(ack_data, "ok", true);
+                    cJSON_AddNumberToObject(ack_data, "got", (double)s_raw_got);
+                    cdc_send_frame("ack", ack_data);
+                }
+                continue;
+            }
+
             if (c == '\n') {
-                if (acc_len > 0) {
-                    acc[acc_len] = '\0';
-                    handle_line(acc);
-                    acc_len = 0;
+                if (s_acc_len > 0) {
+                    s_acc[s_acc_len] = '\0';
+                    handle_line(s_acc);
+                    s_acc_len = 0;
                 }
                 continue;   /* 忽略空行与 \r 之外的处理（\r 由下面剔除） */
             }
             if (c == '\r') {
                 continue;
             }
-            if (acc_len < CDC_LINE_MAX) {
-                acc[acc_len++] = c;
+            if (s_acc_len < CDC_LINE_MAX) {
+                s_acc[s_acc_len++] = c;
             } else {
                 ESP_LOGW(TAG, "超长帧丢弃（>%d）", CDC_LINE_MAX);
                 cdc_send_error(0, 402, "frame too long");
-                acc_len = 0;
+                s_acc_len = 0;
                 break;
+            }
+        }
+        /* 音频流卡死自救：字节计数凑不齐且 3 秒无数据 → 放弃并恢复 JSON 通道 */
+        if (s_raw_mode && n == 0 &&
+            (xTaskGetTickCount() - s_last_rx_tick) > pdMS_TO_TICKS(CDC_RAW_STALE_MS)) {
+            ESP_LOGW(TAG, "音频流 %u/%u 字节停滞超时，放弃并恢复通道",
+                     (unsigned)s_raw_got, (unsigned)s_raw_total);
+            i2s_player_stream_end();
+            s_raw_mode = false;
+            s_pcm_len = 0;
+            {
+                cJSON *ack_data = cJSON_CreateObject();
+                cJSON_AddNumberToObject(ack_data, "ref_seq", s_raw_seq);
+                cJSON_AddBoolToObject(ack_data, "ok", false);
+                cJSON_AddNumberToObject(ack_data, "got", (double)s_raw_got);
+                cdc_send_frame("ack", ack_data);
             }
         }
     }

@@ -23,27 +23,28 @@ static const char *TAG = "i2s_player";
 #define PIN_DOUT  GPIO_NUM_7
 #define SAMPLE_RATE 16000
 
-/* EMBED_FILES 嵌入的三段提示音（V1-103 已在 CMakeLists 注册） */
-extern const uint8_t _binary_sounds_chime_success_wav_start[] asm("_binary_sounds_chime_success_wav_start");
-extern const uint8_t _binary_sounds_chime_success_wav_end[]   asm("_binary_sounds_chime_success_wav_end");
-extern const uint8_t _binary_sounds_chime_error_wav_start[]   asm("_binary_sounds_chime_error_wav_start");
-extern const uint8_t _binary_sounds_chime_error_wav_end[]     asm("_binary_sounds_chime_error_wav_end");
-extern const uint8_t _binary_sounds_chime_notice_wav_start[]  asm("_binary_sounds_chime_notice_wav_start");
-extern const uint8_t _binary_sounds_chime_notice_wav_end[]    asm("_binary_sounds_chime_notice_wav_end");
+/* EMBED_FILES 嵌入的三段提示音（V1-103 已在 CMakeLists 注册）
+ * 注意：IDF 生成的符号名只取文件名（不含目录），即 _binary_chime_xxx_wav_* */
+extern const uint8_t _binary_chime_success_wav_start[] asm("_binary_chime_success_wav_start");
+extern const uint8_t _binary_chime_success_wav_end[]   asm("_binary_chime_success_wav_end");
+extern const uint8_t _binary_chime_error_wav_start[]   asm("_binary_chime_error_wav_start");
+extern const uint8_t _binary_chime_error_wav_end[]     asm("_binary_chime_error_wav_end");
+extern const uint8_t _binary_chime_notice_wav_start[]  asm("_binary_chime_notice_wav_start");
+extern const uint8_t _binary_chime_notice_wav_end[]    asm("_binary_chime_notice_wav_end");
 
 typedef struct {
     const char *name;
-    const uint8_t *data;
-    size_t len;
+    const uint8_t *start;
+    const uint8_t *end;
 } sound_item_t;
 
 static const sound_item_t SOUNDS[] = {
-    { "chime_success", _binary_sounds_chime_success_wav_start,
-      _binary_sounds_chime_success_wav_end - _binary_sounds_chime_success_wav_start },
-    { "chime_error",   _binary_sounds_chime_error_wav_start,
-      _binary_sounds_chime_error_wav_end - _binary_sounds_chime_error_wav_start },
-    { "chime_notice",  _binary_sounds_chime_notice_wav_start,
-      _binary_sounds_chime_notice_wav_end - _binary_sounds_chime_notice_wav_start },
+    { "chime_success", _binary_chime_success_wav_start,
+      _binary_chime_success_wav_end },
+    { "chime_error",   _binary_chime_error_wav_start,
+      _binary_chime_error_wav_end },
+    { "chime_notice",  _binary_chime_notice_wav_start,
+      _binary_chime_notice_wav_end },
 };
 
 static i2s_chan_handle_t s_tx = NULL;
@@ -173,12 +174,13 @@ int i2s_player_play_named(const char *sound)
     if (i2s_player_stream_begin(0) != ESP_OK) {
         return -1;                     /* 播放器忙（如正在播 TTS 流） */
     }
-    size_t off = wav_pcm_offset(item->data, item->len);
-    int played = write_mono_as_stereo(item->data + off, item->len - off);
+    size_t wav_len = (size_t)(item->end - item->start);
+    size_t off = wav_pcm_offset(item->start, wav_len);
+    int played = write_mono_as_stereo(item->start + off, wav_len - off);
     i2s_player_stream_end();
     ESP_LOGI(TAG, "音效 %s 播放%s（%d/%u 字节）", sound,
              played < 0 ? "被中止" : "完成", played < 0 ? -played : played,
-             (unsigned)(item->len - off));
+             (unsigned)(wav_len - off));
     return played;
 }
 
@@ -195,13 +197,14 @@ esp_err_t i2s_player_stream_begin(uint32_t total_bytes)
     s_abort = false;
     s_stream_total = total_bytes;
     s_stream_consumed = 0;
-    channel_reset();
+    /* 注意：不要在这里 disable/enable 通道——I2S 驱动的 write 在 DMA 停滞时会
+     * 自旋，实测会把 CPU1 吃满触发任务看门狗。打断靠 s_abort 标志逐块检查。 */
     return ESP_OK;
 }
 
 int i2s_player_feed_pcm(const uint8_t *pcm, size_t len)
 {
-    if (!s_inited || s_stream_total && s_stream_consumed >= s_stream_total) {
+    if (!s_inited || (s_stream_total && s_stream_consumed >= s_stream_total)) {
         return -1;
     }
     int played = write_mono_as_stereo(pcm, len);

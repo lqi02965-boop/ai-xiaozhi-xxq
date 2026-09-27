@@ -42,37 +42,67 @@ class SerialBridge:
             frame["seq"] = self._seq
         self._q.put(frame)
 
-    def send_audio_stream(self, pcm: bytes) -> None:
-        """按协议 v1.1 下发音频流：audio_start JSON → 原始 PCM 字节。
-
-        设备按 audio_start 里的 bytes 计数消费，收满自动回 ack。
-        分块写入 + 微延迟，避免塞满设备端 CDC 接收缓冲。
-        """
+    def send_audio_stream(self, pcm: bytes, chunk_size: int = 4096) -> None:
+        """按协议 v1.2 停等流控下发音频：audio_start（含 chunk 大小）→
+        每发一块等设备 ack → 下一块。流控由 ack 同步，天然无溢出。
+        在 bridge 线程内同步执行（借用 _emit 机制），期间读写同一串口。"""
         with self._lock:
             self._seq += 1
             seq = self._seq
         header = {"v": 1, "type": "audio_start", "seq": seq,
                   "data": {"format": "pcm_16k_16bit_mono", "bytes": len(pcm),
-                           "interrupt": True}}
-        chunk = 1024
-        delay = 0.001
+                           "chunk": chunk_size, "interrupt": True}}
 
         if self.dry_run:
-            log.info("[DRY-RUN] 音频流 %d bytes（audio_start 头 + 原始 PCM %d 块，数据略）",
-                     len(pcm), (len(pcm) + chunk - 1) // chunk)
+            log.info("[DRY-RUN] 音频流 %d bytes（audio_start + %d 块停等，数据略）",
+                     len(pcm), (len(pcm) + chunk_size - 1) // chunk_size)
             return
 
         def _emit() -> None:
             self._write_raw((json.dumps(header) + "\n").encode("utf-8"))
-            time.sleep(0.05)   # 让设备先处理 JSON 头
-            total = 0
-            for i in range(0, len(pcm), chunk):
-                self._write_raw(pcm[i:i + chunk])
-                total += min(chunk, len(pcm) - i)
-                time.sleep(delay)
-            log.info("音频流下发完成: %d bytes（%d 块）", total, (len(pcm) + chunk - 1) // chunk)
+            time.sleep(0.3)    # 让设备先处理 JSON 头（设备 20ms 轮询 + 余量）
+            offset = 0
+            while offset < len(pcm):
+                block = pcm[offset:offset + chunk_size]
+                self._write_raw(block)
+                got = self._wait_stream_ack(offset + len(block))
+                if got is None:
+                    log.warning("块 ack 异常（offset=%d），中止本次语音下发", offset)
+                    return
+                offset = got
+            log.info("音频流下发完成: %d bytes", offset)
 
         self._q.put(("__raw__", _emit))   # 队列里放一个动作，保持发送串行化
+
+    def _wait_stream_ack(self, expect_got: int, timeout: float = 3.0):
+        """停等流控：等设备块 ack，返回实际收到字节数；失步返回 None。"""
+        end = time.time() + timeout
+        buf = b""
+        while time.time() < end:
+            try:
+                c = self._ser.read(128) if self._ser else b""
+            except Exception:
+                return None
+            if c:
+                buf += c
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.decode("utf-8", "replace").strip()
+                if line.startswith("{"):
+                    try:
+                        resp = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if resp.get("type") == "ack" and resp.get("data", {}).get("ok"):
+                        got = resp["data"].get("got", expect_got)
+                        if got != expect_got:
+                            log.warning("ack got=%s 与期望 %s 不符（字节失步）",
+                                        got, expect_got)
+                            return None
+                        return got
+                    log.warning("流控收到非 ack 帧: %s", line[:80])
+                    return None
+        return None
 
     def _write_raw(self, data: bytes) -> None:
         if self._ser is not None:

@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_app_desc.h"
 #include "cdc_link.h"
+#include "i2s_player.h"
 
 static const char *TAG = "agent_speaker";
 
@@ -29,8 +30,12 @@ void app_main(void)
     ESP_LOGI(TAG, "编译时间: %s %s", app->date, app->time);
     ESP_LOGI(TAG, "==============================");
 
+    /* V1-102：初始化 I2S 播放器（MAX98357A），随后 CDC 指令即可出声 */
+    if (i2s_player_init() != ESP_OK) {
+        ESP_LOGE(TAG, "I2S 播放器初始化失败");
+    }
     /* 启动 USB-CDC 指令通道（V1-105）：PC 可发 ping/play_sound/status */
-    if (cdc_link_start() != 0) {
+    if (cdc_link_start() != ESP_OK) {
         ESP_LOGE(TAG, "CDC 通道启动失败");
     }
 
