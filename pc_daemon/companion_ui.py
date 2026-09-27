@@ -74,6 +74,14 @@ class ChatUI:
     def _build_widgets(self) -> None:
         pad = {"padx": 8, "pady": 4}
 
+        # 顶栏：置顶按钮常驻窗口顶端右侧
+        topbar = tk.Frame(self.root)
+        topbar.pack(side="top", fill="x")
+        self.top_btn = tk.Button(topbar, text="📌 置顶", width=7,
+                                 command=self.toggle_topmost, relief="flat",
+                                 fg="#555555")
+        self.top_btn.pack(side="right", padx=6, pady=2)
+
         self.history = scrolledtext.ScrolledText(self.root, state="disabled",
                                                  wrap="word", font=("微软雅黑", 11))
         self.history.pack(fill="both", expand=True, **pad)
@@ -93,9 +101,6 @@ class ChatUI:
         self.mute_btn = tk.Button(bar, text="🔊", width=4,
                                   command=self.toggle_mute)
         self.mute_btn.pack(side="left")
-        self.top_btn = tk.Button(bar, text="📌 置顶", width=8,
-                                 command=self.toggle_topmost)
-        self.top_btn.pack(side="left", padx=6)
         self.clear_btn = tk.Button(bar, text="🧹 清记忆", width=8,
                                    command=self.clear_memory)
         self.clear_btn.pack(side="right")
