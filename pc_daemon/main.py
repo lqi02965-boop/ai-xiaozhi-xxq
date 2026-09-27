@@ -16,7 +16,7 @@ import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from .agent_monitor import AgentMonitor
+from .agent_monitor import AgentMonitor, ApprovalWatcher
 from .events import SKIP, EventBus
 from .prompt_engine import PromptEngine
 from .serial_bridge import SerialBridge
@@ -115,7 +115,9 @@ def main() -> None:
     bus = EventBus()
     engine = PromptEngine(cfg.get("llm", []),
                           persona=cfg.get("persona", "语气可爱俏皮"),
-                          max_chars=cfg.get("max_chars", 20))
+                          max_chars=cfg.get("max_chars", 20),
+                          library_path=cfg.get("prompt_library", ""),
+                          use_llm=cfg.get("llm_for_phrases", False))
     tts = TTSEngine(cfg.get("tts", {})) if cfg.get("tts", {}).get("enabled", True) else None
     bridge = SerialBridge(cfg["serial"], dry_run=args.dry_run or args.demo)
 
@@ -133,6 +135,10 @@ def main() -> None:
     bridge.start()
     for m in monitors:
         m.start()
+    approval = None
+    if cfg.get("approval_watch", {}).get("enabled", True):
+        approval = ApprovalWatcher(cfg.get("approval_watch", {}), bus)
+        approval.start()
     t = threading.Thread(target=worker, daemon=True,
                          args=(bus, engine, tts, bridge, cfg["sounds"],
                                cfg.get("audio_output", "device"), stop))
@@ -163,6 +169,8 @@ def main() -> None:
         stop.set()
         for m in monitors:
             m.stop()
+        if approval:
+            approval.stop()
         bridge.stop()
         bus.close()
         log.info("守护进程退出")

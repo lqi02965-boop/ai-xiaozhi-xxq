@@ -47,6 +47,80 @@ class _FileCursor:
         return data.splitlines()
 
 
+class ApprovalWatcher(threading.Thread):
+    """审批/提问等待监控（轮询 ZCode 的 db.sqlite part 表）。
+
+    原理（2026-09-27 活体实验确认）：AskUserQuestion/ExitPlanMode 等交互类工具
+    在等待用户回应期间，part.state.status 停在 'running'；工具权限审批等待期
+    则可能是 'pending'。出现即提醒，消失即复位；同一部件持续等待时按
+    repeat_sec 间隔重复提醒。
+    """
+
+    INTERACTIVE_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
+
+    def __init__(self, cfg: dict, bus: EventBus) -> None:
+        super().__init__(daemon=True, name="approval-watcher")
+        self.db_path = os.path.expanduser(cfg.get("db_path", "~/.zcode/cli/db/db.sqlite"))
+        self.poll_interval = cfg.get("poll_interval_sec", 2.0)
+        self.repeat_sec = cfg.get("repeat_sec", 180)
+        self.bus = bus
+        self._stop = threading.Event()
+        self._last_part = ""          # 已提醒的 part 标识（tool+callID）
+        self._last_emit = 0.0
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        import sqlite3
+
+        log.info("审批监控启动: %s", self.db_path)
+        try:
+            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True,
+                                  check_same_thread=False)
+            con.row_factory = sqlite3.Row   # 不设这行，r["data"] 是元组会全部静默跳过
+        except Exception:
+            log.exception("审批监控打不开数据库，功能停用")
+            return
+        while not self._stop.is_set():
+            try:
+                self._poll_once(con)
+            except Exception:
+                log.exception("审批轮询异常，忽略本轮")
+            self._stop.wait(self.poll_interval)
+        con.close()
+        log.info("审批监控退出")
+
+    def _poll_once(self, con) -> None:
+        waiting = []   # (key, tool)
+        # 用 json_extract 直接筛"运行中/待审批"的工具部件，不受 id 排序噪音影响
+        cur = con.execute(
+            "SELECT id, data FROM part "
+            "WHERE json_extract(data,'$.type')='tool' "
+            "AND json_extract(data,'$.state.status') IN ('pending','running') "
+            "ORDER BY time_updated DESC LIMIT 20")
+        for r in cur:
+            try:
+                d = json.loads(r["data"])
+            except Exception:
+                continue
+            state = d.get("state") or {}
+            st, tool = state.get("status"), d.get("tool", "")
+            key = str(r["id"])
+            if st == "pending" or (st == "running" and tool in self.INTERACTIVE_TOOLS):
+                waiting.append((key, tool))
+        now = time.time()
+        if waiting:
+            key, tool = waiting[0]
+            if key != self._last_part or now - self._last_emit >= self.repeat_sec:
+                self._last_part = key
+                self._last_emit = now
+                self.bus.put(AgentEvent(kind="approval", agent="zcode",
+                                        session_id="", detail=f"{tool} 等待用户回应"))
+        else:
+            self._last_part = ""   # 已解除，允许下次重新提醒
+
+
 class AgentMonitor(threading.Thread):
     """扫描日志目录，把新事件解析后投递到 EventBus（带冷却去抖）。"""
 
@@ -69,10 +143,16 @@ class AgentMonitor(threading.Thread):
 
     # ---- 事件规则 -------------------------------------------------------
     def _classify(self, rec: dict) -> tuple[str, str] | None:
-        """返回 (kind, detail)；不关心的事件返回 None。"""
+        """返回 (kind, detail)；不关心的事件返回 None。
+
+        用户要求（2026-09-27）：只提醒「最终任务完成 / 报错 / 审批等待」，
+        模型每轮响应（轮询小任务）不提醒——所以 done 只在 turn.completed 时报。
+        """
         ev = rec.get("event", "")
-        if ev == "model.request.completed":
-            return "done", f"{rec.get('sessionId', '')[:13]} 一轮响应完成"
+        if ev == "turn.completed":
+            return "done", f"{rec.get('sessionId', '')[:13]} 一轮任务完成"
+        if ev in ("model.request.failed", "model.sdk.stream.failed"):
+            return "error", str(rec.get("message", "模型请求失败"))[:80]
         if rec.get("level") == "error":
             return "error", str(rec.get("message", "未知错误"))[:80]
         return None

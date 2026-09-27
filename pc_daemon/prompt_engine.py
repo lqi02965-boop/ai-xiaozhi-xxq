@@ -40,6 +40,11 @@ LOCAL_PHRASES: dict[str, dict[str, list[str]]] = {
             "报错了，稍等，查一下就好。",
             "有点小意外，已记录，稍后处理。",
         ],
+        "approval": [
+            "zcode 卡在审批了，过来点一下。",
+            "需要你审批，去看看再走。",
+            "有个确认框等你，别走远。",
+        ],
     },
     "御姐": {
         "done": [
@@ -72,20 +77,68 @@ LOCAL_PHRASES: dict[str, dict[str, list[str]]] = {
 
 class PromptEngine:
     def __init__(self, providers: list[dict], persona: str = DEFAULT_PERSONA,
-                 max_chars: int = 20) -> None:
+                 max_chars: int = 20, library_path: str = "",
+                 use_llm: bool = False) -> None:
+        self.use_llm = use_llm    # false=纯词库随机短语（零 token）；true=LLM 生成
         self.providers = [p for p in providers if p]
-        self.persona = persona
         self.max_chars = max_chars
+        self.library_path = library_path
+        self._lib_mtime = 0.0
+        self._lib_tone = {}        # 状态 → 词库列表（来自 Obsidian 播报词库）
+        self.persona = persona     # 会被词库文件的「人设」段覆盖
         self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(persona=persona)
-        tone = ("慵懒" if "慵懒" in persona or "睡醒" in persona
-                else "御姐" if any(w in persona for w in ("御姐", "高傲", "傲娇"))
+        self._phrases = LOCAL_PHRASES["可爱"]
+        self._refresh_library()
+        tone = ("慵懒" if "慵懒" in self.persona or "睡醒" in self.persona
+                else "御姐" if any(w in self.persona for w in ("御姐", "高傲", "傲娇"))
                 else "可爱")
-        self._phrases = LOCAL_PHRASES[tone]
+        if not self._lib_tone:     # 词库文件没提供该状态时用内置分档
+            self._phrases = LOCAL_PHRASES[tone]
         names = [p.get("name", p.get("model", "?")) for p in self.providers]
-        log.info("LLM 链: %s → 本地词库（%s档）", " → ".join(names) or "(空)", tone)
+        log.info("LLM 链: %s → 本地词库（%s档，词库文件=%s）",
+                 " → ".join(names) or "(空)", tone,
+                 "已加载" if self._lib_tone else "未启用")
+
+    def _refresh_library(self) -> None:
+        """Obsidian 播报词库热加载：文件变化即更新人设与词库（本地读文件零 token）。"""
+        if not self.library_path:
+            return
+        try:
+            mtime = os.path.getmtime(self.library_path)
+        except OSError:
+            return
+        if mtime == self._lib_mtime:
+            return
+        self._lib_mtime = mtime
+        try:
+            persona_lines, phrases = [], {}
+            cur = None
+            with open(self.library_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.rstrip()
+                    if line.startswith("## "):
+                        cur = line[3:].strip()
+                        phrases.setdefault(cur, [])
+                    elif cur and line.startswith("- "):
+                        phrases[cur].append(line[2:].strip())
+                    elif cur == "人设" and line.strip():
+                        persona_lines.append(line.strip())
+            if persona_lines:
+                self.persona = "，".join(persona_lines)
+                self.system_prompt = SYSTEM_PROMPT_TEMPLATE.format(persona=self.persona)
+            self._lib_tone = phrases
+            log.info("播报词库已加载: %s（状态: %s）",
+                     os.path.basename(self.library_path),
+                     "、".join(k for k in phrases if k != "人设"))
+        except Exception:
+            log.exception("播报词库解析失败，沿用上次内容")
 
     # ---- 对外 ------------------------------------------------------------
     def gen(self, event: AgentEvent) -> str:
+        self._refresh_library()   # 每次事件先热加载词库（mtime 未变则零开销）
+        # 默认直接用词库随机短语（零 token）；use_llm=true 时才走 LLM 链
+        if not self.use_llm:
+            return self._gen_local(event)
         user = f"Agent={event.agent}，事件={event.kind}，详情={event.detail}"
         for p in self.providers:
             text = self._gen_remote(p, user)
@@ -147,7 +200,11 @@ class PromptEngine:
         return ""
 
     def _gen_local(self, event: AgentEvent) -> str:
-        return random.choice(self._phrases.get(event.kind, ["我有新消息！"]))
+        # 播报词库段名（中文）↔ 事件种类（英文）映射
+        section = {"done": "完成", "error": "报错", "approval": "审批提醒"}.get(
+            event.kind, event.kind)
+        pool = self._lib_tone.get(section) or self._phrases.get(event.kind)
+        return random.choice(pool or ["我有新消息！"])
 
     def _clamp(self, text: str) -> str:
         text = text.replace("\n", " ").strip()

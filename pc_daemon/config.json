@@ -58,6 +58,8 @@
       8
     ]
   },
+  "llm_for_phrases": false,
+  "prompt_library": "D:/esp/esp32/实战项目/人工智能小智/10-播报词库.md",
   "audio_output": "pc",
   "tts": {
     "enabled": true,
@@ -66,8 +68,15 @@
     "edge_pitch": "-5Hz",
     "sapi_rate": 180
   },
+  "approval_watch": {
+    "enabled": true,
+    "db_path": "~/.zcode/cli/db/db.sqlite",
+    "poll_interval_sec": 2.0,
+    "repeat_sec": 180
+  },
   "sounds": {
     "done": "chime_success",
-    "error": "chime_error"
+    "error": "chime_error",
+    "approval": "chime_notice"
   }
 }
