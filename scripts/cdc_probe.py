@@ -66,7 +66,7 @@ def make_sine_pcm(seconds: float = 0.6, freq: int = 440) -> bytes:
     out = bytearray()
     for i in range(n):
         env = min(1.0, (n - i) / (sr * 0.05))   # 末尾 50ms 淡出
-        v = 0.5 * math.sin(2 * math.pi * freq * i / sr) * env
+        v = 0.9 * math.sin(2 * math.pi * freq * i / sr) * env
         out += struct.pack("<h", int(v * 32767))
     return bytes(out)
 

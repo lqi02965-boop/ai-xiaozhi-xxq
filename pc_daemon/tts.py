@@ -43,8 +43,9 @@ class TTSEngine:
     def __init__(self, cfg: dict) -> None:
         self.voice = cfg.get("edge_voice", "zh-CN-XiaoxiaoNeural")
         self.rate = cfg.get("rate", "+8%")
-        self.pitch = cfg.get("edge_pitch", "")     # 变调：如 "+20Hz"（少女）/-20Hz（御姐）
+        self.pitch = cfg.get("edge_pitch", "+0Hz")  # 变调：如 "+20Hz"（少女）/-20Hz（御姐）
         self.sapi_rate = cfg.get("sapi_rate", 180)
+        self.volume = float(cfg.get("volume", 2.5))  # 软件音量增益（>1 放大，自动削波）
         self._lock = threading.Lock()   # pyttsx3 非线程安全，串行化
         self._ffmpeg = self._find_ffmpeg(cfg.get("ffmpeg_path", ""))
         log.info("TTS 初始化：voice=%s pitch=%s ffmpeg=%s（A 路线 %s）",
@@ -107,11 +108,24 @@ class TTSEngine:
             if proc.returncode != 0 or not proc.stdout:
                 log.warning("ffmpeg 转码失败: %s", proc.stderr[:120])
                 return None
-            log.info("A 路线（edge-tts+ffmpeg）: %d bytes PCM", len(proc.stdout))
-            return proc.stdout
+            out = self._apply_volume(proc.stdout)
+            log.info("A 路线（edge-tts+ffmpeg）: %d bytes PCM（音量 ×%s）",
+                     len(out), self.volume)
+            return out
         except Exception:
             log.warning("A 路线异常，转 B 路线", exc_info=True)
             return None
+
+    def _apply_volume(self, pcm: bytes) -> bytes:
+        """线性音量增益（int16，audioop 自动削波防炸耳）。"""
+        if self.volume == 1.0 or not pcm:
+            return pcm
+        try:
+            import audioop
+
+            return audioop.mul(pcm, 2, self.volume)
+        except Exception:
+            return pcm
 
     # ---- B 路线：pyttsx3（Windows SAPI） ---------------------------------
     def _via_pyttsx3(self, text: str) -> bytes | None:
@@ -140,6 +154,7 @@ class TTSEngine:
                 raw, _ = audioop.ratecv(raw, 2, ch, rate, TARGET_RATE, None)
             if ch == 2:
                 raw, _ = audioop.tomono(raw, 2, 0.5, 0.5)
+            raw = self._apply_volume(raw)
             log.info("B 路线（pyttsx3 SAPI）: %d bytes PCM（约 %.1f 秒）",
                      len(raw), len(raw) / (TARGET_RATE * 2))
             return raw
