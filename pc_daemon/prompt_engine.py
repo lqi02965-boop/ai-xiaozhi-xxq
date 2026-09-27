@@ -18,7 +18,7 @@ from .events import AgentEvent
 log = logging.getLogger("prompt_engine")
 
 SYSTEM_PROMPT_TEMPLATE = (
-    "你是桌面机器人小智的播报词生成器。人设：{persona}。"
+    "你是桌面机器人云小小的播报词生成器。人设：{persona}。"
     "根据 Agent 工作事件，生成一句不超过20字的中文口语播报，"
     "要有情绪、符合人设、不要引号和句号结尾。只输出这一句话。"
 )

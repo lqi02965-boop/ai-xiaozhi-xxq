@@ -1,4 +1,4 @@
-"""companion_ui —— 小智陪伴聊天图形界面（Tkinter，纯新增，v1 零改动）
+"""companion_ui —— 云小小陪伴聊天图形界面（Tkinter，纯新增，v1 零改动）
 
 与控制台版 companion.py 共用同一份配置（companion_config.json）与记忆
 （companion_memory.json），两个版本可互换使用。
@@ -51,7 +51,7 @@ log = logging.getLogger("companion_ui")
 class ChatUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title("小智 · 陪伴模式 🌙")
+        root.title("云小小 · 陪伴模式 🌙")
         root.geometry("520x640")
         root.minsize(420, 520)
 
@@ -127,8 +127,8 @@ class ChatUI:
     # ---------- 工具 ----------
     def _append(self, who: str, text: str) -> None:
         self.history.config(state="normal")
-        tag = {"你": "you", "小智": "ai", "": "sys"}.get(who, "sys")
-        prefix = {"你": "你：", "小智": "小智：", "": ""}.get(who, "")
+        tag = {"你": "you", "云小小": "ai", "": "sys"}.get(who, "sys")
+        prefix = {"你": "你：", "云小小": "云小小：", "": ""}.get(who, "")
         self.history.insert("end", f"{prefix}{text}\n\n", tag)
         self.history.see("end")
         self.history.config(state="disabled")
@@ -193,7 +193,7 @@ class ChatUI:
         if not reply:
             self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
             return
-        self.ui_q.put(("chat", "小智", reply))
+        self.ui_q.put(("chat", "云小小", reply))
         if self.muted:
             self.ui_q.put(("status", "💡 静音中，点🔊恢复"))
             return
@@ -249,7 +249,7 @@ def main() -> None:
         try:
             from tkinter import messagebox
             root = tk.Tk(); root.withdraw()
-            messagebox.showerror("小智", "启动失败：" + str(e) +
+            messagebox.showerror("云小小", "启动失败：" + str(e) +
                                  "\n详见 logs/companion_ui.log")
         except Exception:
             pass

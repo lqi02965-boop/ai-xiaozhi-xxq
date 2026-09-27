@@ -1,4 +1,4 @@
-"""companion —— 小智情感陪伴聊天（独立程序，纯新增，不影响守护进程）
+"""companion —— 云小小情感陪伴聊天（独立程序，纯新增，不影响守护进程）
 
 用法：
     python -m pc_daemon.companion
@@ -571,7 +571,7 @@ def main() -> None:
     muted = False
 
     print("=" * 56)
-    print("  小智陪伴模式 🌙  说话聊天，/t 打字，/exit 退出")
+    print("  云小小陪伴模式 🌙  说话聊天，/t 打字，/exit 退出")
     print("  操作：按回车开始说 → 说完再按回车")
     print("=" * 56)
 
@@ -618,13 +618,13 @@ def main() -> None:
             continue
         if not reply:
             continue
-        print(f"小智：{reply}")
+        print(f"云小小：{reply}")
         if not muted:
             pcm = tts.synthesize(sanitize_for_tts(reply))
             if pcm:
                 pc_player.play_pcm(pcm)
 
-    print("\n小智：下次再聊哦，我会记得我们的对话 🌙")
+    print("\n云小小：下次再聊哦，我会记得我们的对话 🌙")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 """pc_player —— PC 本机播放 PCM（过渡模式，V1-302b）。
 
-用途：功放还没焊好之前，让小智的"声音"先从 PC 音箱出来，完整体验
+用途：功放还没焊好之前，让云小小的"声音"先从 PC 音箱出来，完整体验
      「Agent 事件 → DeepSeek 播报词 → TTS → 出声」闭环；焊好后把
-     config.json 的 audio_output 从 "pc" 改成 "device" 即切换到小智本体。
+     config.json 的 audio_output 从 "pc" 改成 "device" 即切换到云小小本体。
 
 实现：把 16k/16bit/mono 原始 PCM 包上 WAV 头（纯内存，零临时文件），
      用 Windows 标准库 winsound 播放——阻塞式，播完才返回。
