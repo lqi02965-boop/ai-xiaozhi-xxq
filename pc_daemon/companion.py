@@ -88,17 +88,22 @@ class Recorder:
 
 # whisper 对静音/噪声的著名幻觉文本（字幕组水印等），命中即视为没听清
 HALLUCINATIONS = ("字幕by", "索兰娅", "请不吝点赞", "明镜与点点", "谢谢观看",
-                  "字幕由", "订阅转发", "謝謝觀看", "Subscribe to", "字幕组")
+                  "字幕由", "订阅转发", "謝謝觀看", "Subscribe to", "字幕组",
+                  "以下是普通话", "以下是普通")
 
 
 class Transcriber:
     def __init__(self, model_name: str, vad_filter: bool = False,
-                 target_peak: float = 0.7, noise_gate: float = 0.012) -> None:
+                 target_peak: float = 0.7, noise_gate: float = 0.012,
+                 initial_prompt: str = "", beam_size: int = 5) -> None:
         self.model_name = model_name
         self.vad_filter = vad_filter
         self.target_peak = target_peak   # 低增益麦克风自动放大到该峰值
         self.noise_gate = noise_gate     # RMS 低于此值视为没说话
+        self.initial_prompt = initial_prompt
+        self.beam_size = beam_size
         self._model = None
+        self._cc = None                  # 繁→简转换器（懒加载）
 
     def _get_model(self):
         if self._model is None:
@@ -119,12 +124,74 @@ class Transcriber:
         if 0.0 < peak < 0.5:                 # 增益过低时自动放大
             audio = audio * (self.target_peak / peak)
         model = self._get_model()
-        segments, _info = model.transcribe(audio, language="zh",
-                                           vad_filter=self.vad_filter)
+        segments, _info = model.transcribe(
+            audio, language="zh", vad_filter=self.vad_filter,
+            beam_size=self.beam_size,
+            condition_on_previous_text=False,
+            initial_prompt=self.initial_prompt or None)
         text = " ".join(s.text.strip() for s in segments).strip()
         if any(h in text for h in HALLUCINATIONS):
             return ""                        # 幻觉文本按"没听清"处理
-        return text
+        return self._to_simplified(text)
+
+    def _to_simplified(self, text: str) -> str:
+        """whisper 偶尔输出繁体 → OpenCC 转简体（库缺失时原样返回）。"""
+        if not text:
+            return text
+        try:
+            if self._cc is None:
+                from opencc import OpenCC
+                self._cc = OpenCC("t2s")
+            return self._cc.convert(text)
+        except Exception:
+            return text
+
+
+class SearchSkill:
+    """必应（国内直连）搜索抓取——给 GLM 提供真实联网信息，杜绝编造。"""
+
+    def __init__(self, count: int = 4) -> None:
+        self.count = count
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+        }
+
+    @staticmethod
+    def clean_query(text: str) -> str:
+        """把口语化消息洗成搜索引擎友好的关键词。"""
+        for w in ("我要玩", "我要去", "我要", "你去", "帮我", "给我", "请问",
+                  "找一下", "找一个", "找个", "查一下", "查查", "搜一下",
+                  "搜索一下", "告诉我", "一下", "麻烦"):
+            text = text.replace(w, " ")
+        return " ".join(text.replace("，", " ").replace(",", " ")
+                          .replace("。", " ").split()).strip()
+
+    def search(self, query: str) -> list:
+        import html as _html
+        import re as _re
+        import requests
+
+        try:
+            r = requests.get("https://cn.bing.com/search",
+                             params={"q": query, "count": self.count},
+                             headers=self.headers, timeout=8)
+            r.raise_for_status()
+        except Exception:
+            return []
+        results = []
+        for m in _re.finditer(
+                r'<li class="b_algo".*?<h2[^>]*><a[^>]*href="([^"]+)"[^>]*>(.*?)</a></h2>(.*?)</li>',
+                r.text, _re.S):
+            url, title_html, rest = m.group(1), m.group(2), m.group(3)
+            title = _html.unescape(_re.sub(r"<[^>]+>", "", title_html)).strip()
+            snip = _re.search(r"<p[^>]*>(.*?)</p>", rest, _re.S)
+            snippet = _html.unescape(_re.sub(r"<[^>]+>", "", snip.group(1))).strip()[:220] if snip else ""
+            results.append({"title": title, "snippet": snippet, "url": url})
+            if len(results) >= self.count:
+                break
+        return results
 
 
 # ---------- 天气技能（Open-Meteo 免费 API，国内直连） ----------
@@ -214,11 +281,14 @@ class Companion:
         self.system_prompt = (cfg["persona"] + "\n当前时间：" +
                               now.strftime("%Y-%m-%d %H:%M") + " 星期" + weekday)
         self.weather = WeatherSkill(cfg)
+        self.search = SearchSkill(cfg.get("search_count", 4))
 
     WEATHER_KEYWORDS = ("天气", "气温", "温度", "几度", "下雨", "下雪", "降雨",
                         "热不热", "冷不冷", "穿什么", "带伞", "湿度", "风力")
     TIME_KEYWORDS = ("星期几", "礼拜几", "几号", "多少号", "日期", "今天几号",
                      "几点", "时间")
+    SEARCH_KEYWORDS = ("搜索", "搜一下", "搜搜", "查一下", "查查", "帮我找",
+                       "找一下", "找一个", "找个", "攻略", "新闻", "最新消息")
 
     def _weather_note(self, user_text: str) -> str:
         """检测天气意图 → 返回要并入主系统提示的实时天气文本（无意图返回空）。"""
@@ -288,6 +358,26 @@ class Companion:
             # 天气服务挂了才走 GLM（会坦诚说查不到）
             user_text += "\n【系统提示】天气服务暂不可用，请坦诚说明查不到实时天气。"
 
+        # 联网搜索：检测到搜索意图 → 必应抓取真实结果 → 注入 GLM
+        if any(k in user_text for k in self.SEARCH_KEYWORDS):
+            results = (self.search.search(self.search.clean_query(user_text))
+                       or self.search.search(user_text))
+            if results:
+                blob = "\n".join(
+                    f"{i + 1}. {r['title']}：{r['snippet']}"
+                    for i, r in enumerate(results))
+                user_text += ("\n【网络搜索结果，回答必须依据这些真实信息，"
+                              "不要编造】\n" + blob)
+            else:
+                self.history.append({"role": "user", "content": user_text})
+                body = random.choice([
+                    "联网搜索暂时不可用，这个我没法帮你查，你先自己搜搜看～",
+                    "（搜索通道掉线了）这个问题要联网才能答，先自己去查一下哦。",
+                ])
+                self.history.append({"role": "assistant", "content": body})
+                self._save_memory()
+                return body
+
         import requests
 
         self.history.append({"role": "user", "content": user_text})
@@ -326,7 +416,9 @@ def main() -> None:
     tts = TTSEngine(cfg.get("tts", {}))
     chat = Companion(cfg)
     ear = Transcriber(cfg.get("whisper_model", "small"),
-                  vad_filter=cfg.get("vad_filter", False))
+                  vad_filter=cfg.get("vad_filter", False),
+                  initial_prompt=cfg.get("initial_prompt", ""),
+                  beam_size=cfg.get("beam_size", 5))
     mic = Recorder(cfg.get("sample_rate", 16000),
                   device=cfg.get("input_device"))
     muted = False
