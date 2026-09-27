@@ -171,7 +171,8 @@ class SearchSkill:
                   "搜索一下", "告诉我", "一下", "麻烦"):
             text = text.replace(w, " ")
         text = text.replace("，", " ").replace(",", " ").replace("。", " ")
-        text = text.replace("的", " ")                   # 的 隔开词组更利索
+        text = text.replace("的", " ").replace("是", " ")  # 的/是 隔开词组更利索
+        text = text.replace("我需要", " ")
         # 中英文之间补空格（三角洲行动m14 → 三角洲行动 m14）
         import re as _re
         text = _re.sub(r"([\u4e00-\u9fff])([A-Za-z0-9])", r"\1 \2", text)
@@ -179,19 +180,36 @@ class SearchSkill:
         return " ".join(text.split()).strip()
 
     def search(self, query: str) -> list:
-        provider = self.provider
-        try:
-            if provider == "bocha":
-                out = self._bocha(query)
+        """渐进式搜索：原查询 → 去掉尾词 → 再去尾词；每个候选先走
+        配置的 provider，失败自动过必应兜底（解决语音转写带语气词搜不到的问题）。"""
+        candidates = [query]
+        words = query.split()
+        if len(words) > 1:
+            candidates.append(" ".join(words[:-1]))
+        if len(words) > 2:
+            candidates.append(" ".join(words[:-2]))
+        import re as _re
+        candidates = [_re.sub(r"[吗呢吧啊呀么]$", "", c).strip() for c in candidates]
+        tried = set()
+        for q in candidates:
+            if not q or q in tried:
+                continue
+            tried.add(q)
+            try:
+                if self.provider == "bocha":
+                    out = self._bocha(q)
+                elif self.provider == "tavily":
+                    out = self._tavily(q)
+                else:
+                    out = []
                 if out:
                     return out
-            elif provider == "tavily":
-                out = self._tavily(query)
-                if out:
-                    return out
-        except Exception:
-            log.warning("搜索 provider %s 故障，回退必应", provider)
-        return self._bing(query)   # 永远有兜底
+            except Exception:
+                log.warning("搜索 provider %s 故障，回退必应", self.provider)
+            out = self._bing(q)          # 每个候选都过必应兜底
+            if out:
+                return out
+        return []
 
     def _api_key(self) -> str:
         """搜索 key 双通道：环境变量优先 → pc_daemon/secrets.json 兜底。"""
