@@ -177,12 +177,16 @@ class SearchSkill:
         provider = self.provider
         try:
             if provider == "bocha":
-                return self._bocha(query)
-            if provider == "tavily":
-                return self._tavily(query)
+                out = self._bocha(query)
+                if out:
+                    return out
+            elif provider == "tavily":
+                out = self._tavily(query)
+                if out:
+                    return out
         except Exception:
-            return []                # provider 故障回退必应
-        return self._bing(query)
+            log.warning("搜索 provider %s 故障，回退必应", provider)
+        return self._bing(query)   # 永远有兜底
 
     def _api_key(self) -> str:
         import os as _os
