@@ -28,7 +28,8 @@ def pcm_to_wav(pcm: bytes, rate: int = 16000, channels: int = 1, width: int = 2)
 
 
 def play_pcm(pcm: bytes) -> bool:
-    """同步播放 PCM（约 len/32000 秒）；失败返回 False。"""
+    """同步播放 PCM（约 len/32000 秒）；失败返回 False。
+    任意线程调用 stop_playback() 可立即打断。"""
     try:
         import winsound
 
@@ -39,3 +40,13 @@ def play_pcm(pcm: bytes) -> bool:
     except Exception:
         log.warning("PC 播放失败", exc_info=True)
         return False
+
+
+def stop_playback() -> None:
+    """立即停止本进程当前播放（winsound 进程级打断）。"""
+    try:
+        import winsound
+
+        winsound.PlaySound(None, 0)
+    except Exception:
+        pass

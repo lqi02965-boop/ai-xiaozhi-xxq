@@ -87,23 +87,37 @@ class ChatUI:
                                    width=12, command=self.toggle_voice,
                                    bg="#e8f4ff")
         self.voice_btn.pack(side="left")
+        self.stop_btn = tk.Button(bar, text="⏹ 停止播放", width=10,
+                                  command=self.stop_playback, state="disabled")
+        self.stop_btn.pack(side="left", padx=6)
         self.mute_btn = tk.Button(bar, text="🔊", width=4,
                                   command=self.toggle_mute)
-        self.mute_btn.pack(side="left", padx=6)
+        self.mute_btn.pack(side="left")
+        self.top_btn = tk.Button(bar, text="📌 置顶", width=8,
+                                 command=self.toggle_topmost)
+        self.top_btn.pack(side="left", padx=6)
         self.clear_btn = tk.Button(bar, text="🧹 清记忆", width=8,
                                    command=self.clear_memory)
         self.clear_btn.pack(side="right")
         self.status = tk.Label(bar, text="💡 点「🎤 说话」开始", fg="#666666")
         self.status.pack(side="right", padx=6)
 
+        # 多行输入框（Ctrl+回车 发送）
+        input_frame = tk.Frame(self.root)
+        input_frame.pack(fill="both", padx=8, pady=(0, 4))
+        self.entry = tk.Text(input_frame, font=("微软雅黑", 11), height=4,
+                             wrap="word")
+        self.entry.pack(fill="both", expand=True)
+        self.entry.bind("<Control-Return>", self.send_text)
+        self.entry.insert("1.0", "")   # 占位
+        hint = tk.Label(self.root, text="Ctrl+回车 发送 ｜ 回车换行", fg="#999999",
+                        font=("微软雅黑", 9))
+        hint.pack(anchor="e", padx=10)
         input_bar = tk.Frame(self.root)
         input_bar.pack(fill="x", padx=8, pady=(0, 8))
-        self.entry = tk.Entry(input_bar, font=("微软雅黑", 11))
-        self.entry.pack(side="left", fill="x", expand=True)
-        self.entry.bind("<Return>", self.send_text)
-        self.send_btn = tk.Button(input_bar, text="发送", width=8,
-                                  command=self.send_text)
-        self.send_btn.pack(side="left", padx=(6, 0))
+        self.send_btn = tk.Button(input_bar, text="发送", width=10,
+                                  command=self.send_text, bg="#e8f4ff")
+        self.send_btn.pack(side="right")
 
     # ---------- 工具 ----------
     def _append(self, who: str, text: str) -> None:
@@ -186,10 +200,10 @@ class ChatUI:
 
     # ---------- 文字 ----------
     def send_text(self, *_event) -> None:
-        text = self.entry.get().strip()
+        text = self.entry.get("1.0", "end-1c").strip()
         if not text:
             return
-        self.entry.delete(0, "end")
+        self.entry.delete("1.0", "end")
         if text == "/clear":
             self.clear_memory()
             return
@@ -202,6 +216,18 @@ class ChatUI:
     def toggle_mute(self) -> None:
         self.muted = not self.muted
         self.mute_btn.config(text="🔇" if self.muted else "🔊")
+
+    def stop_playback(self) -> None:
+        """立即打断当前语音播放。"""
+        pc_player.stop_playback()
+        self._set_status("⏹ 已停止播放")
+
+    def toggle_topmost(self) -> None:
+        """窗口置顶开关。"""
+        self.topmost = not getattr(self, "topmost", False)
+        self.root.attributes("-topmost", self.topmost)
+        self.top_btn.config(text="📌 已置顶" if self.topmost else "📌 置顶",
+                            bg="#fff7d6" if self.topmost else "SystemButtonFace")
 
     def clear_memory(self) -> None:
         self.chat.clear()
