@@ -27,3 +27,7 @@ pc_daemon/logs/
 
 # TTS 合成测试产物
 pc_daemon/tts_test/
+
+# 运行时锁文件
+pc_daemon/daemon.lock
+pc_daemon/logs/startup.log

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import threading
 from logging.handlers import RotatingFileHandler
@@ -88,6 +89,16 @@ def worker(bus: EventBus, engine: PromptEngine, tts, bridge: SerialBridge,
                 "interrupt": True, "text": text}})
 
 
+def acquire_lock(lock_path: Path) -> bool:
+    """单实例保护：daemon.lock 存在即认为已有实例在跑（停止脚本会清理）。"""
+    if lock_path.exists():
+        print(f"已有实例运行（{lock_path}），本次退出。"
+              f"如确认没有实例，删除该文件后重试。")
+        return False
+    lock_path.write_text(str(os.getpid()), encoding="utf-8")
+    return True
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="小智 v1 PC 守护进程")
     ap.add_argument("--config", default=str(Path(__file__).parent / "config.json"))
@@ -98,6 +109,9 @@ def main() -> None:
 
     setup_logging(args.verbose)
     cfg = load_config(Path(args.config))
+    lock_path = Path(__file__).parent / "daemon.lock"
+    if not acquire_lock(lock_path):
+        sys.exit(2)
     bus = EventBus()
     engine = PromptEngine(cfg.get("llm", []),
                           persona=cfg.get("persona", "语气可爱俏皮"),
@@ -152,6 +166,10 @@ def main() -> None:
         bridge.stop()
         bus.close()
         log.info("守护进程退出")
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
