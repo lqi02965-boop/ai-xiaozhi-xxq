@@ -60,7 +60,7 @@
   },
   "llm_for_phrases": false,
   "prompt_library": "D:/esp/esp32/实战项目/人工智能小智/10-播报词库.md",
-  "audio_output": "device",
+  "audio_output": "pc",
   "tts": {
     "enabled": true,
     "edge_voice": "zh-CN-XiaoxiaoNeural",
