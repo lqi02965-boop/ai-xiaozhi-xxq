@@ -240,13 +240,19 @@ class ChatUI:
 
 
 def main() -> None:
-    root = tk.Tk()
     try:
+        root = tk.Tk()
         ChatUI(root)
-    except Exception:
-        log.exception("界面初始化失败")
-        raise
-    root.mainloop()
+        root.mainloop()
+    except Exception as e:
+        log.exception("界面启动失败")
+        try:
+            from tkinter import messagebox
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("小智", "启动失败：" + str(e) +
+                                 "\n详见 logs/companion_ui.log")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
