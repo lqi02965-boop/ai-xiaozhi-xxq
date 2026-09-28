@@ -64,6 +64,8 @@ class ChatUI:
                             device=self.cfg.get("input_device"))
         self.muted = False
         self.recording = False
+        self.busy = False
+        self.cancel_event = threading.Event()   # 打断对话的取消令牌
         self.ui_q: "queue.Queue[tuple]" = queue.Queue()
 
         self._build_widgets()
@@ -97,8 +99,8 @@ class ChatUI:
                                    width=12, command=self.toggle_voice,
                                    bg="#e8f4ff")
         self.voice_btn.pack(side="left")
-        self.stop_btn = tk.Button(bar, text="⏹ 停止播放", width=10,
-                                  command=self.stop_playback, state="disabled")
+        self.stop_btn = tk.Button(bar, text="⏹ 打断", width=10,
+                                  command=self.interrupt)
         self.stop_btn.pack(side="left", padx=6)
         self.mute_btn = tk.Button(bar, text="🔊", width=4,
                                   command=self.toggle_mute)
@@ -195,8 +197,26 @@ class ChatUI:
         self.root.clipboard_append(text)
         self._set_status("📋 已复制全部对话")
 
+    # ---------- 中断（打断对话） ----------
+    def interrupt(self) -> None:
+        """立即打断云小小：停掉当前播放、取消还没播的内容。
+        旧流程持有旧取消令牌，打断后换新令牌给下一轮。"""
+        old = self.cancel_event
+        old.set()
+        pc_player.stop_playback()
+        self.cancel_event = threading.Event()
+        self.busy = False
+
     # ---------- 语音 ----------
     def toggle_voice(self) -> None:
+        # 云小小正在说话/思考 → 点 🎤 = 打断并直接开始录音（抢话）
+        if self.busy:
+            self.interrupt()
+            self.voice_btn.config(text="⏹ 结束", bg="#ffe8e8")
+            self.recording = True
+            self.mic.start()
+            self._set_status("🎙️ 已打断，录音中…说完点「结束」")
+            return
         if not self.recording:
             self.mic.start()
             self.recording = True
@@ -211,18 +231,23 @@ class ChatUI:
 
     def _voice_pipeline(self, audio) -> None:
         """转写 → 对话 → 播放（后台线程，UI 不卡）。"""
+        ce = self.cancel_event
         if audio is None or len(audio) == 0:
             self.ui_q.put(("status", "💡 没录到内容，再试一次"))
             return
         self.ui_q.put(("status", "🧠 转写中…（首次加载模型稍慢）"))
         text = self.ear.transcribe(audio)
+        if ce.is_set():
+            return
         if not text:
             self.ui_q.put(("chat", "", "（没听清——靠近麦克风大声点，或打字）"))
             self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
             return
-        self._pipeline_text(text)
+        self._pipeline_text(text, ce)
 
-    def _pipeline_text(self, text: str) -> None:
+    def _pipeline_text(self, text: str, ce=None) -> None:
+        ce = ce or self.cancel_event
+        self.busy = True
         self.ui_q.put(("chat", "你", text))
         self.ui_q.put(("status", "💭 思考中…"))
         try:
@@ -230,19 +255,27 @@ class ChatUI:
         except Exception as e:
             self.ui_q.put(("chat", "", f"（网络开小差了：{e}）"))
             self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
+            self.busy = False
+            return
+        if ce.is_set():                          # 等待期间被打断 → 不播
+            self.busy = False
+            self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
             return
         if not reply:
             self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
+            self.busy = False
             return
         self.ui_q.put(("chat", "云小小", reply))
         if self.muted:
             self.ui_q.put(("status", "💡 静音中，点🔊恢复"))
+            self.busy = False
             return
-        self.ui_q.put(("status", "🔊 播放中…"))
+        self.ui_q.put(("status", "🔊 播放中…（点🎤可打断）"))
         pcm = self.tts.synthesize(sanitize_for_tts(reply))
-        if pcm:
+        if pcm and not ce.is_set():
             pc_player.play_pcm(pcm)
         self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
+        self.busy = False
 
     # ---------- 文字 ----------
     def send_text(self, *_event) -> None:
@@ -250,6 +283,8 @@ class ChatUI:
         if not text:
             return
         self.entry.delete("1.0", "end")
+        if self.busy:
+            self.interrupt()   # 新消息打断当前对话
         if text == "/clear":
             self.clear_memory()
             return
