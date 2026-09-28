@@ -496,6 +496,24 @@ class Companion:
                 tool_calls = msg.get("tool_calls")
                 if not tool_calls:
                     reply = (msg.get("content") or "").strip()
+                    # 修：GLM 偶尔把工具调用当可见文本输出（content 里带
+                    # {"delta":{"tool_calls":[{"function":{"name":"web_search"...}}]}}）
+                    # → 提取其中的 query，按普通工具执行
+                    if '"tool_calls"' in reply and '"web_search"' in reply:
+                        import re as _re
+                        mq = _re.search(r'\\"query\\":\s*\\"((?:[^"\\]|\\.)*?)\\"', reply)
+                        if mq:
+                            try:
+                                q2 = json.loads('"' + mq.group(1) + '"')
+                            except Exception:
+                                q2 = mq.group(1)
+                            tool_fired = True
+                            result = self._exec_tool("web_search", {"query": q2})
+                            if result:
+                                messages.append({"role": "user", "content":
+                                    ("【系统搜索结果】基于以下真实搜索结果重新回答"
+                                     "（不要输出任何 JSON 或代码）：\n" + result)})
+                                continue               # 回到循环让模型基于结果作答
                     break
                 tool_fired = True
                 messages.append(msg)                    # assistant.tool_calls
@@ -511,12 +529,20 @@ class Companion:
                     messages.append({"role": "tool",
                                      "tool_call_id": tc.get("id", ""),
                                      "content": result})
-            # 兜底：GLM 没调工具但消息有搜索意图（或出现拒答话术）→ 强制搜索重答
+            # 兜底：GLM 没调工具时 → 三种信号强制搜索重答
+            # ①消息含搜索意图关键词 ②回复出现拒答话术 ③模型主动提出"帮你搜索"（直接替用户答应）
             refuse = any(p in reply for p in ("无法访问互联网", "无法联网", "无法找到",
                                               "没有找到", "无法直接提供", "无法提供具体",
-                                              "无法上网", "无法搜索"))
+                                              "无法上网", "无法搜索", "无法确定"))
+            offer = any(p in reply for p in ("帮你搜索", "帮你搜一下", "帮你查一下",
+                                             "需要我帮你搜", "帮你查找", "我来搜索"))
+            user_asks = any(k in user_text for k in self.SEARCH_KEYWORDS) or (
+                ("什么" in user_text or "？" in user_text or "?" in user_text
+                 or "怎么" in user_text) and
+                any(u in reply for u in ("不确定", "不清楚", "可能是", "或许是", "不太确定")))
             if not tool_fired and reply and (
-                    any(k in user_text for k in self.SEARCH_KEYWORDS) or refuse):
+                    any(k in user_text for k in self.SEARCH_KEYWORDS) or refuse or offer
+                    or user_asks):
                 results = (self.search.search(self.search.clean_query(user_text))
                            or self.search.search(user_text))
                 if results:
