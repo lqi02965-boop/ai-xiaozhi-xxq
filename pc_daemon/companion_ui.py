@@ -83,7 +83,9 @@ class ChatUI:
         self.top_btn.pack(side="right", padx=6, pady=2)
 
         self.history = scrolledtext.ScrolledText(self.root, state="disabled",
-                                                 wrap="word", font=("微软雅黑", 11))
+                                                 wrap="word", font=("微软雅黑", 11),
+                                                 selectbackground="#b5d5ff")
+        self._last_reply = ""
         self.history.pack(fill="both", expand=True, **pad)
         self.history.tag_config("you", foreground="#2050a0")
         self.history.tag_config("ai", foreground="#0a7a4a")
@@ -153,6 +155,45 @@ class ChatUI:
         except queue.Empty:
             pass
         self.root.after(100, self._poll_ui)
+
+    # ---------- 复制功能 ----------
+    def _show_ctx_menu(self, event) -> None:
+        menu = tk.Menu(self.root, tearoff=0)
+        try:
+            has_sel = bool(self.history.get("sel.first", "sel.last"))
+        except Exception:
+            has_sel = False
+        menu.add_command(label="复制选中文字" if has_sel else "复制选中文字（先拖选）",
+                         command=self.copy_selection,
+                         state="normal" if has_sel else "disabled")
+        menu.add_command(label="复制云小小最新回复", command=self.copy_last_reply)
+        menu.add_command(label="复制全部对话", command=self.copy_all)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def copy_selection(self) -> None:
+        try:
+            text = self.history.get("sel.first", "sel.last")
+        except Exception:
+            text = ""
+        if text:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self._set_status("📋 已复制选中文字")
+
+    def copy_last_reply(self) -> None:
+        if self._last_reply:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self._last_reply)
+            self._set_status("📋 已复制云小小最新回复")
+
+    def copy_all(self) -> None:
+        text = self.history.get("1.0", "end-1c")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._set_status("📋 已复制全部对话")
 
     # ---------- 语音 ----------
     def toggle_voice(self) -> None:
