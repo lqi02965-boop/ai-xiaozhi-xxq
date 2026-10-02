@@ -17,6 +17,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from .agent_monitor import AgentMonitor, ApprovalWatcher
+from .agent_scan import scan as scan_agents_fs
 from .events import SKIP, EventBus
 from .prompt_engine import PromptEngine
 from .serial_bridge import SerialBridge
@@ -99,7 +100,107 @@ def acquire_lock(lock_path: Path) -> bool:
     return True
 
 
-def _control_port_loop(cfg, monitors, approval, stop: threading.Event) -> None:
+def _stop_monitor_by_name(monitors: list, name: str) -> None:
+    for m in list(monitors):
+        if m.agent == name:
+            m.stop()
+            monitors.remove(m)
+
+
+def _switch_monitor_by_name(monitors: list, name: str, on: bool) -> None:
+    for m in monitors:
+        if m.agent == name:
+            m.enabled = on
+
+
+def _persist_agent(name: str, acfg: dict | None) -> None:
+    """把动态添加/移除的 Agent 持久化到 config.json（重启后保持）。"""
+    p = Path(__file__).parent / "config.json"
+    cfg = json.loads(p.read_text(encoding="utf-8"))
+    agents = cfg.setdefault("agents", {})
+    if acfg is None:
+        agents.pop(name, None)
+    else:
+        agents[name] = acfg
+    p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("agents 配置已持久化: %s", name)
+
+
+def _persist_agent_flag(name: str, on: bool) -> None:
+    p = Path(__file__).parent / "config.json"
+    cfg = json.loads(p.read_text(encoding="utf-8"))
+    agents = cfg.setdefault("agents", {})
+    if name in agents:
+        agents[name]["disabled"] = not on
+        p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
+                           approval, bus) -> None:
+    # ---- Agent 管理：扫描/列表/添加/开关/移除 ----
+    if action == "scan_agents":
+        monitored = {m.agent: getattr(m, "acfg", {}) for m in monitors}
+        out = json.dumps({"ok": True, "agents": scan_agents_fs(monitored)},
+                         ensure_ascii=False) + "\n"
+        conn.sendall(out.encode("utf-8"))
+        return
+    if action == "list_agents":
+        out = json.dumps({"ok": True,
+                          "agents": [m.agent for m in monitors]},
+                         ensure_ascii=False) + "\n"
+        conn.sendall(out.encode("utf-8"))
+        return
+    if action == "add_agent":
+        ac = cmd.get("agent") or {}
+        name = ac.get("name", "")
+        if not name or not ac.get("log_dir"):
+            conn.sendall(b'{"ok": false, "error": "need name & log_dir"}\n')
+            return
+        _stop_monitor_by_name(monitors, name)          # 重名先停旧的
+        m = AgentMonitor(name, ac, bus,
+                         poll_interval=cfg.get("poll_interval_sec", 2.0),
+                         cooldown_sec=cfg.get("cooldown_sec", 30))
+        m.start()
+        monitors.append(m)
+        _persist_agent(name, ac)
+        log.info("动态添加 Agent 监视: %s", name)
+        conn.sendall((json.dumps({"ok": True, "added": name},
+                                 ensure_ascii=False) + "\n").encode("utf-8"))
+        return
+    if action == "agent_switch":
+        name, on = cmd.get("name", ""), bool(cmd.get("on"))
+        _switch_monitor_by_name(monitors, name, on)
+        _persist_agent_flag(name, on)
+        conn.sendall((json.dumps({"ok": True, "name": name,
+                                  "enabled": on}) + "\n").encode("utf-8"))
+        return
+    if action == "remove_agent":
+        name = cmd.get("name", "")
+        _stop_monitor_by_name(monitors, name)
+        _persist_agent(name, None)
+        conn.sendall((json.dumps({"ok": True, "removed": name}) + "\n").encode("utf-8"))
+        return
+
+    on_expr = (action == "monitor_on" if action != "monitor_toggle"
+               else not all(m.enabled for m in monitors))
+    if action in ("monitor_on", "monitor_off", "monitor_toggle"):
+        on = on_expr
+        for m in monitors:
+            m.enabled = on
+        if approval:
+            approval.enabled = on
+        log.info("Agent 监视已%s", "开启" if on else "关闭")
+        resp = json.dumps({"ok": True, "monitor": on}) + "\n"
+        conn.sendall(resp.encode("utf-8"))
+    elif action == "status":
+        resp = json.dumps({"ok": True,
+                           "monitor": all(m.enabled for m in monitors)
+                           if monitors else False}) + "\n"
+        conn.sendall(resp.encode("utf-8"))
+
+
+def _control_port_loop(cfg, monitors, approval, stop: threading.Event,
+                       bus) -> None:
     """本地控制端口（127.0.0.1:18765）：GUI 可远程开关 Agent 监视。
     仅监听回环地址，不暴露到网络。"""
     import socket
@@ -128,26 +229,14 @@ def _control_port_loop(cfg, monitors, approval, stop: threading.Event) -> None:
             except Exception:
                 continue
             action = cmd.get("cmd", "")
-            on_expr = (action == "monitor_on" if action != "monitor_toggle"
-                       else not all(m.enabled for m in monitors))
-            if action in ("monitor_on", "monitor_off", "monitor_toggle"):
-                on = on_expr
-                for m in monitors:
-                    m.enabled = on
-                if approval:
-                    approval.enabled = on
-                log.info("Agent 监视已%s", "开启" if on else "关闭")
+            try:
+                _handle_control_action(conn, cmd, action, cfg, monitors,
+                                       approval, bus)
+            except Exception:
+                # 任何命令异常都必须记录并保住端口线程（此前曾静默死亡）
+                log.exception("控制命令 %s 执行失败", action)
                 try:
-                    resp = json.dumps({"ok": True, "monitor": on}) + "\n"
-                    conn.sendall(resp.encode("utf-8"))
-                except Exception:
-                    pass
-            elif action == "status":
-                try:
-                    resp = json.dumps({"ok": True,
-                                       "monitor": all(m.enabled for m in monitors)
-                                       if monitors else False}) + "\n"
-                    conn.sendall(resp.encode("utf-8"))
+                    conn.sendall(b'{"ok": false, "error": "internal"}\n')
                 except Exception:
                     pass
     srv.close()
@@ -255,7 +344,7 @@ def main() -> None:
     threading.Thread(target=_briefing_loop, daemon=True,
                      args=(cfg, tts, bridge, stop)).start()
     threading.Thread(target=_control_port_loop, daemon=True,
-                     args=(cfg, monitors, approval, stop)).start()
+                     args=(cfg, monitors, approval, stop, bus)).start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 
     try:

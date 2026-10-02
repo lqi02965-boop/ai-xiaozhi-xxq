@@ -64,6 +64,7 @@ class ApprovalWatcher(threading.Thread):
         self.poll_interval = cfg.get("poll_interval_sec", 2.0)
         self.repeat_sec = cfg.get("repeat_sec", 180)
         self.bus = bus
+        self.enabled = True                 # GUI 可远程开关
         self._stop = threading.Event()
         self._last_part = ""          # 已提醒的 part 标识（tool+callID）
         self._last_emit = 0.0
@@ -146,10 +147,11 @@ class AgentMonitor(threading.Thread):
         self.bus = bus
         self.poll_interval = poll_interval
         self.cooldown_sec = cooldown_sec
+        self.acfg = dict(acfg)              # 本 agent 完整配置（扫描回显用）
         self._cursors: dict[Path, _FileCursor] = {}
         self._last_emit: dict[tuple[str, str, str], float] = {}
         self._stop = threading.Event()
-        self.enabled = True                 # GUI 可远程开关
+        self.enabled = not acfg.get("disabled", False)   # GUI 可远程开关
 
     def stop(self) -> None:
         self._stop.set()
@@ -203,7 +205,9 @@ class AgentMonitor(threading.Thread):
     def _poll_once(self) -> None:
         if not self.enabled:
             return
-        files = {Path(p) for p in glob.glob(str(self.dir / self.pattern))}
+        recursive = "**" in self.pattern
+        files = {Path(p) for p in glob.glob(str(self.dir / self.pattern),
+                                            recursive=recursive)}
         # 只保留普通文件，且清理已消失文件
         files = {p for p in files if p.is_file()}
         for gone in set(self._cursors) - files:
