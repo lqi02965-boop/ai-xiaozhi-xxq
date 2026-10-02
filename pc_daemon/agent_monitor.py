@@ -124,15 +124,25 @@ class ApprovalWatcher(threading.Thread):
 
 
 class AgentMonitor(threading.Thread):
-    """扫描日志目录，把新事件解析后投递到 EventBus（带冷却去抖）。"""
+    """扫描日志目录，把新事件解析后投递到 EventBus（带冷却去抖）。
 
-    def __init__(self, agent: str, log_dir: str, pattern: str,
+    支持两类规则（按 acfg 自动选择）：
+    - zcode 型（默认）：event 字段名 + 内置规则（turn.completed→done、error→报错）
+    - 数据驱动型：event_field 指定事件字段名，event_match 指定 {kind: [事件值子串]}，
+      detail_field 指定详情来源——任意 agent 的 JSONL 日志都能接（如 workbuddy 审计日志）
+    """
+
+    def __init__(self, agent: str, acfg: dict,
                  bus: EventBus, poll_interval: float = 2.0,
                  cooldown_sec: float = 30.0) -> None:
         super().__init__(daemon=True, name=f"monitor-{agent}")
         self.agent = agent
-        self.dir = Path(log_dir).expanduser()
-        self.pattern = pattern
+        self.dir = Path(acfg["log_dir"]).expanduser()
+        self.pattern = acfg.get("log_pattern", "*.jsonl")
+        self.event_field = acfg.get("event_field", "event")
+        self.session_field = acfg.get("session_field", "sessionId")
+        self.event_match = acfg.get("event_match") or {}    # {kind: [事件值子串]}
+        self.detail_field = acfg.get("detail_field", "")
         self.bus = bus
         self.poll_interval = poll_interval
         self.cooldown_sec = cooldown_sec
@@ -148,10 +158,17 @@ class AgentMonitor(threading.Thread):
     def _classify(self, rec: dict) -> tuple[str, str] | None:
         """返回 (kind, detail)；不关心的事件返回 None。
 
-        用户要求（2026-09-27）：只提醒「最终任务完成 / 报错 / 审批等待」，
-        模型每轮响应（轮询小任务）不提醒——所以 done 只在 turn.completed 时报。
+        数据驱动模式（workbuddy 等）：event_match 命中即报。
+        zcode 型（默认规则）：turn.completed→done、error 级→报错；
+        用户要求（2026-09-27）：只提醒「最终任务完成 / 报错」，轮询小任务不提醒。
         """
-        ev = rec.get("event", "")
+        ev = rec.get(self.event_field, "")
+        if self.event_match:
+            for kind, patterns in self.event_match.items():
+                if any(p in ev for p in patterns):
+                    detail = str(rec.get(self.detail_field, "") or ev)[:80]
+                    return kind, detail
+            return None
         if ev == "turn.completed":
             return "done", f"{rec.get('sessionId', '')[:13]} 一轮任务完成"
         if ev in ("model.request.failed", "model.sdk.stream.failed"):

@@ -10,8 +10,17 @@
       "log_pattern": "zcode-*.jsonl"
     },
     "workbuddy": {
-      "log_dir": "",
-      "log_pattern": ""
+      "log_dir": "~/.workbuddy/audit-log",
+      "log_pattern": "2*.jsonl",
+      "event_field": "eventType",
+      "session_field": "sessionId",
+      "detail_field": "commandPreview",
+      "event_match": {
+        "error": [
+          "command-safety.rejected",
+          "command-safety.system-tool-blocked"
+        ]
+      }
     }
   },
   "llm": [

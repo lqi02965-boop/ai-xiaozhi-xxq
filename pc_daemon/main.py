@@ -235,7 +235,7 @@ def main() -> None:
         if not acfg.get("log_dir"):
             log.info("跳过未配置的 agent: %s", name)
             continue
-        m = AgentMonitor(name, acfg["log_dir"], acfg["log_pattern"], bus,
+        m = AgentMonitor(name, acfg, bus,
                          poll_interval=cfg.get("poll_interval_sec", 2.0),
                          cooldown_sec=cfg.get("cooldown_sec", 30))
         monitors.append(m)
