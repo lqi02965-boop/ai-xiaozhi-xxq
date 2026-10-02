@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk, messagebox
 
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE.parent))
