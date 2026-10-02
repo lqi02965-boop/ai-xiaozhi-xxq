@@ -74,8 +74,9 @@ class SerialBridge:
 
         self._q.put(("__raw__", _emit))   # 队列里放一个动作，保持发送串行化
 
-    def _wait_stream_ack(self, expect_got: int, timeout: float = 3.0):
-        """停等流控：等设备块 ack，返回实际收到字节数；失步返回 None。"""
+    def _wait_stream_ack(self, expect_got: int, timeout: float = 5.0):
+        """停等流控：等设备块 ack，返回实际收到字节数；失步返回 None。
+        心跳 pong 等无关帧跳过继续等（不作为失败）。"""
         end = time.time() + timeout
         buf = b""
         while time.time() < end:
@@ -93,15 +94,23 @@ class SerialBridge:
                         resp = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if resp.get("type") == "ack" and resp.get("data", {}).get("ok"):
-                        got = resp["data"].get("got", expect_got)
-                        if got != expect_got:
-                            log.warning("ack got=%s 与期望 %s 不符（字节失步）",
-                                        got, expect_got)
-                            return None
-                        return got
-                    log.warning("流控收到非 ack 帧: %s", line[:80])
-                    return None
+                    rtype = resp.get("type")
+                    if rtype == "ack":
+                        data = resp.get("data", {})
+                        if data.get("ok"):
+                            got = data.get("got", expect_got)
+                            if got != expect_got:
+                                log.warning("ack got=%s 与期望 %s 不符（字节失步）",
+                                            got, expect_got)
+                                return None
+                            return got
+                        log.warning("设备报告流失败: %s", line[:80])
+                        return None
+                    if rtype in ("pong", "status", "error"):
+                        log.debug("流控等待期间收到 %s 帧，跳过", rtype)
+                        continue
+                    log.debug("流控忽略未知帧: %s", line[:60])
+        log.warning("流控等待 ack 超时（%.1fs）", timeout)
         return None
 
     def _write_raw(self, data: bytes) -> None:
