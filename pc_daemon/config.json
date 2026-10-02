@@ -8,6 +8,14 @@
     "zcode": {
       "log_dir": "~/.zcode/cli/log",
       "log_pattern": "zcode-*.jsonl"
+    },
+    "dsh": {
+      "name": "dsh",
+      "log_dir": "C:\\Users\\是祺啊\\.dsh\\sessions",
+      "pattern": "**/*.jsonl.zstd",
+      "event_field": "event",
+      "event_match": {},
+      "detail_field": ""
     }
   },
   "llm": [

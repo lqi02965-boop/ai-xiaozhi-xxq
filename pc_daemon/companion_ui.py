@@ -73,75 +73,111 @@ class ChatUI:
         self._sys("💡 点「🎤 说话」按钮开始语音聊天；或直接在下方打字（也支持 Win+H 语音听写）")
 
     # ---------- 界面构建 ----------
+    # 小清新柑橘配色
+    C_BG = "#FFFDF5"        # 奶白背景
+    C_LEMON = "#FFF59D"     # 柠檬黄
+    C_LEMON_DEEP = "#F9A825"
+    C_POMELO = "#FFB74D"    # 柚子橙
+    C_POMELO_DEEP = "#F57C00"
+    C_LEAF = "#558B2F"      # 叶绿
+    C_TEXT = "#37474F"
+
     def _build_widgets(self) -> None:
         pad = {"padx": 8, "pady": 4}
+        self.root.configure(bg=self.C_BG)
 
-        # 顶栏：置顶按钮常驻窗口顶端右侧
-        topbar = tk.Frame(self.root)
+        # 顶栏：功能按钮（扁平小清新）
+        topbar = tk.Frame(self.root, bg=self.C_BG)
         topbar.pack(side="top", fill="x")
         self.top_btn = tk.Button(topbar, text="📌 置顶", width=7,
                                  command=self.toggle_topmost, relief="flat",
-                                 fg="#555555")
+                                 bd=0, bg=self.C_BG, fg=self.C_LEAF,
+                                 activebackground=self.C_LEMON,
+                                 font=("微软雅黑", 10))
         self.top_btn.pack(side="right", padx=6, pady=2)
         self.agents_btn = tk.Button(topbar, text="🤖 Agent", width=8,
                                     command=self.open_agents_window,
-                                    relief="flat", fg="#555555")
+                                    relief="flat", bd=0, bg=self.C_BG,
+                                    fg=self.C_LEAF,
+                                    activebackground=self.C_LEMON,
+                                    font=("微软雅黑", 10))
         self.agents_btn.pack(side="right", padx=2, pady=2)
         self.monitor_on = True
         self.mon_btn = tk.Button(topbar, text="🛡️ 监视:开", width=10,
                                  command=self.toggle_monitor, relief="flat",
-                                 fg="#0a7a4a")
+                                 bd=0, bg=self.C_BG, fg=self.C_LEAF,
+                                 activebackground=self.C_LEMON,
+                                 font=("微软雅黑", 10))
         self.mon_btn.pack(side="right", padx=2, pady=2)
 
-        self.history = scrolledtext.ScrolledText(self.root, state="disabled",
-                                                 wrap="word", font=("微软雅黑", 11),
-                                                 selectbackground="#b5d5ff")
+        # 聊天记录（柠檬奶白纸面）
+        self.history = scrolledtext.ScrolledText(
+            self.root, state="disabled", wrap="word", font=("微软雅黑", 11),
+            bg="#FFFEF7", fg=self.C_TEXT, relief="flat", bd=0,
+            highlightthickness=1, highlightbackground="#F0EBC8",
+            selectbackground=self.C_LEMON, padx=12, pady=10,
+            spacing1=4, spacing3=6)
         self._last_reply = ""
         self.history.pack(fill="both", expand=True, **pad)
-        self.history.tag_config("you", foreground="#2050a0")
-        self.history.tag_config("ai", foreground="#0a7a4a")
-        self.history.tag_config("sys", foreground="#888888")
+        self.history.tag_config("you", foreground="#E65100")     # 柚子橙
+        self.history.tag_config("ai", foreground="#33691E")      # 柠檬叶绿
+        self.history.tag_config("sys", foreground="#B0A890")
 
-        bar = tk.Frame(self.root)
+        bar = tk.Frame(self.root, bg=self.C_BG)
         bar.pack(fill="x", **pad)
-        self.voice_btn = tk.Button(bar, text="🎤 说话", font=("微软雅黑", 12),
+        self.voice_btn = tk.Button(bar, text="🍊 说话", font=("微软雅黑", 12),
                                    width=12, command=self.toggle_voice,
-                                   bg="#e8f4ff")
-        self.voice_btn.pack(side="left")
+                                   bg=self.C_POMELO, fg="#5D4037",
+                                   activebackground=self.C_LEMON,
+                                   activeforeground="#5D4037",
+                                   relief="flat", bd=0, cursor="hand2")
+        self.voice_btn.pack(side="left", ipady=4)
         self.stop_btn = tk.Button(bar, text="⏹ 打断", width=10,
-                                  command=self.interrupt)
-        self.stop_btn.pack(side="left", padx=6)
-        self.mute_btn = tk.Button(bar, text="🔊", width=4,
-                                  command=self.toggle_mute)
+                                  command=self.interrupt, relief="flat", bd=0,
+                                  bg="#FFF3E0", fg="#8D6E63",
+                                  activebackground=self.C_LEMON, cursor="hand2")
+        self.stop_btn.pack(side="left", padx=6, ipady=4)
+        self.mute_btn = tk.Button(bar, text="🔊", width=4, relief="flat",
+                                  bd=0, bg=self.C_BG, fg=self.C_LEAF,
+                                  activebackground=self.C_LEMON, cursor="hand2",
+                                  font=("微软雅黑", 11))
         self.mute_btn.pack(side="left")
         self.clear_btn = tk.Button(bar, text="🧹 清记忆", width=8,
-                                   command=self.clear_memory)
+                                   command=self.clear_memory, relief="flat",
+                                   bd=0, bg=self.C_BG, fg="#8D6E63",
+                                   activebackground=self.C_LEMON,
+                                   font=("微软雅黑", 10))
         self.clear_btn.pack(side="right")
-        self.status = tk.Label(bar, text="💡 点「🎤 说话」开始", fg="#666666")
+        self.status = tk.Label(bar, text="🍋 点「🍊 说话」开始", fg="#9E9D24",
+                               bg=self.C_BG, font=("微软雅黑", 10))
         self.status.pack(side="right", padx=6)
 
         # 多行输入框（Ctrl+回车 发送）
-        input_frame = tk.Frame(self.root)
+        input_frame = tk.Frame(self.root, bg=self.C_BG)
         input_frame.pack(fill="both", padx=8, pady=(0, 4))
         self.entry = tk.Text(input_frame, font=("微软雅黑", 11), height=4,
-                             wrap="word")
+                             wrap="word", bg="#FFFEF7", fg=self.C_TEXT,
+                             relief="flat", bd=0, highlightthickness=1,
+                             highlightbackground="#F0EBC8", padx=10, pady=8)
         self.entry.pack(fill="both", expand=True)
         self.entry.bind("<Control-Return>", self.send_text)
-        self.entry.insert("1.0", "")   # 占位
-        hint = tk.Label(self.root, text="Ctrl+回车 发送 ｜ 回车换行", fg="#999999",
-                        font=("微软雅黑", 9))
+        hint = tk.Label(self.root, text="Ctrl+回车 发送 ｜ 回车换行 🍋",
+                        fg="#C0C0A0", bg=self.C_BG, font=("微软雅黑", 9))
         hint.pack(anchor="e", padx=10)
-        input_bar = tk.Frame(self.root)
+        input_bar = tk.Frame(self.root, bg=self.C_BG)
         input_bar.pack(fill="x", padx=8, pady=(0, 8))
-        self.send_btn = tk.Button(input_bar, text="发送", width=10,
-                                  command=self.send_text, bg="#e8f4ff")
-        self.send_btn.pack(side="right")
+        self.send_btn = tk.Button(input_bar, text="🍋 发送", width=10,
+                                  command=self.send_text, bg=self.C_POMELO,
+                                  fg="#5D4037", activebackground=self.C_LEMON,
+                                  relief="flat", bd=0, cursor="hand2",
+                                  font=("微软雅黑", 11))
+        self.send_btn.pack(side="right", ipady=3)
 
     # ---------- 工具 ----------
     def _append(self, who: str, text: str) -> None:
         self.history.config(state="normal")
         tag = {"你": "you", "云小小": "ai", "": "sys"}.get(who, "sys")
-        prefix = {"你": "你：", "云小小": "云小小：", "": ""}.get(who, "")
+        prefix = {"你": "🍊 你：", "云小小": "🍋 云小小：", "": ""}.get(who, "")
         self.history.insert("end", f"{prefix}{text}\n\n", tag)
         self.history.see("end")
         self.history.config(state="disabled")
@@ -194,7 +230,7 @@ class ChatUI:
         if r2 and r2.get("ok"):
             self.monitor_on = new_on
             self.mon_btn.config(text=f"🛡️ 监视:{'开' if new_on else '关'}",
-                                fg="#0a7a4a" if new_on else "#a03030")
+                                fg=self.C_LEAF if new_on else "#BF8F30")
             self._sys(f"（Agent 监视已{'开启' if new_on else '关闭'}——zcode 完成与报错提醒暂停）")
         else:
             self._set_status("⚠️ 切换失败，见守护进程日志")
@@ -262,7 +298,7 @@ class ChatUI:
         # 云小小正在说话/思考 → 点 🎤 = 打断并直接开始录音（抢话）
         if self.busy:
             self.interrupt()
-            self.voice_btn.config(text="⏹ 结束", bg="#ffe8e8")
+            self.voice_btn.config(text="⏹ 结束", bg="#FFE0B2")
             self.recording = True
             self.mic.start()
             self._set_status("🎙️ 已打断，录音中…说完点「结束」")
@@ -270,11 +306,11 @@ class ChatUI:
         if not self.recording:
             self.mic.start()
             self.recording = True
-            self.voice_btn.config(text="⏹ 结束", bg="#ffe8e8")
+            self.voice_btn.config(text="⏹ 结束", bg="#FFE0B2")
             self._set_status("🎙️ 录音中…说完点「结束」")
         else:
             self.recording = False
-            self.voice_btn.config(text="🎤 说话", bg="#e8f4ff")
+            self.voice_btn.config(text="🍊 说话", bg=self.C_POMELO)
             audio = self.mic.stop()
             threading.Thread(target=self._voice_pipeline, args=(audio,),
                              daemon=True).start()
@@ -346,7 +382,7 @@ class ChatUI:
 
     def toggle_mute(self) -> None:
         self.muted = not self.muted
-        self.mute_btn.config(text="🔇" if self.muted else "🔊")
+        self.mute_btn.config(text="🍋" if self.muted else "🔊")
 
     def stop_playback(self) -> None:
         """立即打断当前语音播放。"""
@@ -358,7 +394,7 @@ class ChatUI:
         self.topmost = not getattr(self, "topmost", False)
         self.root.attributes("-topmost", self.topmost)
         self.top_btn.config(text="📌 已置顶" if self.topmost else "📌 置顶",
-                            bg="#fff7d6" if self.topmost else "SystemButtonFace")
+                            bg=self.C_LEMON if self.topmost else self.C_BG)
 
     def clear_memory(self) -> None:
         self.chat.clear()
@@ -387,17 +423,18 @@ class AgentsWindow:
     def __init__(self, root: tk.Tk, ui) -> None:
         self.ui = ui
         self.win = tk.Toplevel(root)
-        self.win.title("🤖 Agent 管理器")
+        self.win.title("🍋 Agent 管理器")
         self.win.geometry("640x430")
         self.win.minsize(560, 380)
+        self.win.configure(bg="#FFFDF5")
         self.rows = {}
 
-        head = tk.Frame(self.win)
+        head = tk.Frame(self.win, bg="#FFFDF5")
         head.pack(fill="x", padx=8, pady=(8, 2))
-        tk.Label(head, text="自动扫描电脑上已安装的 AI Agent，选中后可启用监视",
-                 fg="#666666").pack(side="left")
+        tk.Label(head, text="自动扫描电脑上已安装的 AI Agent，选中后可启用监视 🍋",
+                 fg="#9E9D24", bg="#FFFDF5").pack(side="left")
 
-        bar = tk.Frame(self.win)
+        bar = tk.Frame(self.win, bg="#FFFDF5")
         bar.pack(fill="x", padx=8, pady=2)
         tk.Button(bar, text="🔄 重新扫描", width=12,
                   command=self.refresh).pack(side="left")
@@ -409,7 +446,13 @@ class AgentsWindow:
                   command=self.add_custom).pack(side="right")
 
         cols = ("name", "desc", "detected", "log_ready", "monitored")
-        self.tree = ttk.Treeview(self.win, columns=cols, show="headings", height=12)
+        style = ttk.Style(self.win)
+        style.configure("Lemon.Treeview", rowheight=28, background="#FFFEF7",
+                        fieldbackground="#FFFEF7", foreground="#37474F")
+        style.configure("Lemon.Treeview.Heading", background="#FFF59D",
+                        foreground="#5D4037")
+        self.tree = ttk.Treeview(self.win, columns=cols, show="headings", height=12,
+                                 style="Lemon.Treeview")
         for cid, text, w in (("name", "Agent", 90), ("desc", "说明", 190),
                              ("detected", "已安装", 60), ("log_ready", "日志就绪", 70),
                              ("monitored", "监视中", 60)):
@@ -417,8 +460,9 @@ class AgentsWindow:
             self.tree.column(cid, width=w, anchor="center")
         self.tree.pack(fill="both", expand=True, padx=8, pady=4)
 
-        self.status = tk.Label(self.win, text="💡 选中一行后可启用/停用；"
-                               "“➕添加自定义”可接入任意有日志的 Agent", fg="#666666")
+        self.status = tk.Label(self.win, text="🍋 选中一行后可启用/停用；"
+                               "“➕添加自定义”可接入任意有日志的 Agent",
+                               fg="#9E9D24", bg="#FFFDF5")
         self.status.pack(anchor="w", padx=8, pady=(0, 6))
         self.refresh()
 
