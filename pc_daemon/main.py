@@ -99,6 +99,60 @@ def acquire_lock(lock_path: Path) -> bool:
     return True
 
 
+def _control_port_loop(cfg, monitors, approval, stop: threading.Event) -> None:
+    """本地控制端口（127.0.0.1:18765）：GUI 可远程开关 Agent 监视。
+    仅监听回环地址，不暴露到网络。"""
+    import socket
+
+    port = cfg.get("control_port", 18765)
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("127.0.0.1", port))
+    except Exception:
+        log.exception("控制端口 %s 绑定失败，远程开关停用", port)
+        return
+    srv.listen(4)
+    srv.settimeout(1.0)
+    log.info("控制端口就绪: 127.0.0.1:%s", port)
+    while not stop.is_set():
+        try:
+            conn, _ = srv.accept()
+        except (socket.timeout, OSError):
+            continue
+        with conn:
+            try:
+                conn.settimeout(2.0)
+                data = conn.recv(4096).decode("utf-8", "replace").strip()
+                cmd = json.loads(data.splitlines()[0]) if data else {}
+            except Exception:
+                continue
+            action = cmd.get("cmd", "")
+            on_expr = (action == "monitor_on" if action != "monitor_toggle"
+                       else not all(m.enabled for m in monitors))
+            if action in ("monitor_on", "monitor_off", "monitor_toggle"):
+                on = on_expr
+                for m in monitors:
+                    m.enabled = on
+                if approval:
+                    approval.enabled = on
+                log.info("Agent 监视已%s", "开启" if on else "关闭")
+                try:
+                    resp = json.dumps({"ok": True, "monitor": on}) + "\n"
+                    conn.sendall(resp.encode("utf-8"))
+                except Exception:
+                    pass
+            elif action == "status":
+                try:
+                    resp = json.dumps({"ok": True,
+                                       "monitor": all(m.enabled for m in monitors)
+                                       if monitors else False}) + "\n"
+                    conn.sendall(resp.encode("utf-8"))
+                except Exception:
+                    pass
+    srv.close()
+
+
 def _briefing_loop(cfg, tts, bridge, stop: threading.Event) -> None:
     """每日定时播报（智能体主动行为）：天气 + 今日新闻 → 语音。"""
     bcfg = cfg.get("briefing", {})
@@ -200,6 +254,8 @@ def main() -> None:
     t.start()
     threading.Thread(target=_briefing_loop, daemon=True,
                      args=(cfg, tts, bridge, stop)).start()
+    threading.Thread(target=_control_port_loop, daemon=True,
+                     args=(cfg, monitors, approval, stop)).start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 
     try:

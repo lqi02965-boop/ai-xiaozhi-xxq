@@ -92,6 +92,8 @@ class ApprovalWatcher(threading.Thread):
         log.info("审批监控退出")
 
     def _poll_once(self, con) -> None:
+        if not self.enabled:
+            return
         waiting = []   # (key, tool)
         # 用 json_extract 直接筛"运行中/待审批"的工具部件，不受 id 排序噪音影响
         cur = con.execute(
@@ -137,6 +139,7 @@ class AgentMonitor(threading.Thread):
         self._cursors: dict[Path, _FileCursor] = {}
         self._last_emit: dict[tuple[str, str, str], float] = {}
         self._stop = threading.Event()
+        self.enabled = True                 # GUI 可远程开关
 
     def stop(self) -> None:
         self._stop.set()
@@ -181,6 +184,8 @@ class AgentMonitor(threading.Thread):
         log.info("监听退出: %s", self.agent)
 
     def _poll_once(self) -> None:
+        if not self.enabled:
+            return
         files = {Path(p) for p in glob.glob(str(self.dir / self.pattern))}
         # 只保留普通文件，且清理已消失文件
         files = {p for p in files if p.is_file()}

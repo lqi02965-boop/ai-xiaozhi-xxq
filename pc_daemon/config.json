@@ -83,5 +83,6 @@
   "briefing": {
     "enabled": true,
     "time": "07:30"
-  }
+  },
+  "control_port": 18765
 }

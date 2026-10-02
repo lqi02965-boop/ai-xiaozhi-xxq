@@ -83,6 +83,11 @@ class ChatUI:
                                  command=self.toggle_topmost, relief="flat",
                                  fg="#555555")
         self.top_btn.pack(side="right", padx=6, pady=2)
+        self.monitor_on = True
+        self.mon_btn = tk.Button(topbar, text="🛡️ 监视:开", width=10,
+                                 command=self.toggle_monitor, relief="flat",
+                                 fg="#0a7a4a")
+        self.mon_btn.pack(side="right", padx=2, pady=2)
 
         self.history = scrolledtext.ScrolledText(self.root, state="disabled",
                                                  wrap="word", font=("微软雅黑", 11),
@@ -157,6 +162,37 @@ class ChatUI:
         except queue.Empty:
             pass
         self.root.after(100, self._poll_ui)
+
+    # ---------- Agent 监视开关（跨进程控制守护进程） ----------
+    def _monitor_cmd(self, action: str):
+        """向守护进程控制端口(127.0.0.1:18765)发命令；失败返回 None。"""
+        import socket
+
+        try:
+            with socket.create_connection(("127.0.0.1", 18765), timeout=2) as sck:
+                frame = json.dumps({"cmd": action}) + "\n"
+                sck.sendall(frame.encode("utf-8"))
+                data = sck.recv(1024).decode("utf-8", "replace").strip()
+                if data:
+                    return json.loads(data.splitlines()[0])
+        except Exception:
+            pass
+        return None
+
+    def toggle_monitor(self) -> None:
+        resp = self._monitor_cmd("status")
+        if resp is None:
+            self._set_status("⚠️ 守护进程未连接，无法切换监视")
+            return
+        new_on = not resp.get("monitor", True)
+        r2 = self._monitor_cmd("monitor_on" if new_on else "monitor_off")
+        if r2 and r2.get("ok"):
+            self.monitor_on = new_on
+            self.mon_btn.config(text=f"🛡️ 监视:{'开' if new_on else '关'}",
+                                fg="#0a7a4a" if new_on else "#a03030")
+            self._sys(f"（Agent 监视已{'开启' if new_on else '关闭'}——zcode 完成与报错提醒暂停）")
+        else:
+            self._set_status("⚠️ 切换失败，见守护进程日志")
 
     # ---------- 复制功能 ----------
     def _show_ctx_menu(self, event) -> None:
