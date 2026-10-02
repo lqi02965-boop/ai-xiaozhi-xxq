@@ -29,6 +29,9 @@ KNOWN_AGENTS = [
     {"name": "trae", "desc": "Trae", "check": "~/.trae"},
     {"name": "codebuddy", "desc": "CodeBuddy", "check": "~/.codebuddy"},
     {"name": "iflow", "desc": "iFlow CLI", "check": "~/.iflow"},
+    {"name": "dsh", "desc": "DeepSeek Harness（DeepSeek 官方 Agent）", "check": "~/.dsh",
+     "log_dir": "~/.dsh/sessions", "pattern": "**/*.jsonl.zstd",
+     "note": "会话为 zstd 压缩 JSONL 且目前仅元数据，监视规则待其日志格式成熟后配置"},
 ]
 
 
