@@ -41,6 +41,25 @@ except ImportError:                      # 直接双击/单文件运行兜底
     from tts import TTSEngine, sanitize_for_tts
 
 CONFIG_PATH = BASE / "companion_config.json"
+ICON_ICO = BASE / "assets" / "yunxxq.ico"      # 窗口/任务栏图标（scripts/gen_app_icon.py 生成）
+ICON_PNG = BASE / "assets" / "yunxxq.png"
+
+
+def apply_app_icon(win) -> None:
+    """窗口标题栏/任务栏换成云小小柑橘图标（ico 优先，png 兜底）。"""
+    try:
+        win.iconbitmap(str(ICON_ICO))
+        return
+    except Exception:
+        pass
+    try:
+        photo = tk.PhotoImage(file=str(ICON_PNG))
+        win._app_icon_ref = photo               # 持引用防 GC
+        win.iconphoto(True, photo)
+    except Exception:
+        pass
+
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s",
                     filename=str(BASE / "logs" / "companion_ui.log"),
@@ -54,6 +73,7 @@ class ChatUI:
         root.title("云小小 · 陪伴模式 🌙")
         root.geometry("520x640")
         root.minsize(420, 520)
+        apply_app_icon(root)
 
         self.cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         self.chat = Companion(self.cfg)
@@ -125,11 +145,10 @@ class ChatUI:
             selectbackground=self.C_LEMON, padx=12, pady=10,
             spacing1=4, spacing3=6)
         self._last_reply = ""
-        # pack 移到 _build_widgets 末尾：底部控件先占位，聊天区填剩余
+        # pack 在 _build_widgets 末尾：底部控件先占位，聊天区最后填剩余
         self.history.tag_config("you", foreground="#E65100")     # 柚子橙
         self.history.tag_config("ai", foreground="#33691E")      # 柠檬叶绿
         self.history.tag_config("sys", foreground="#B0A890")
-        self.history.pack(fill="both", expand=True, **pad)
 
         bar = tk.Frame(self.root, bg=self.C_BG)
         bar.pack(fill="x", **pad)
@@ -186,6 +205,8 @@ class ChatUI:
                                  fg="#8D6E63", cursor="hand2",
                                  font=("微软雅黑", 10))
         self.out_btn.pack(side="left")
+        # 聊天区最后打包：只吃剩余空间，任何窗口尺寸下底部控件都可见
+        self.history.pack(fill="both", expand=True, **pad)
 
     # ---------- 声音输出切换 ----------
     def _query_audio_output(self) -> str | None:
@@ -475,6 +496,7 @@ class AgentsWindow:
         self.win.geometry("640x430")
         self.win.minsize(560, 380)
         self.win.configure(bg="#FFFDF5")
+        apply_app_icon(self.win)
         self.rows = {}
 
         head = tk.Frame(self.win, bg="#FFFDF5")
