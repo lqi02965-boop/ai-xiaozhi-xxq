@@ -1,3 +1,7 @@
 faster-whisper>=1.0
 sounddevice>=0.4.6
 requests>=2.31
+funasr>=1.4
+modelscope>=1.20
+torch>=2.0  # CPU 版即可
+cffi>=1.16  # SenseVoice 特征提取

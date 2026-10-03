@@ -95,24 +95,62 @@ HALLUCINATIONS = ("字幕by", "索兰娅", "请不吝点赞", "明镜与点点",
 class Transcriber:
     def __init__(self, model_name: str, vad_filter: bool = False,
                  target_peak: float = 0.7, noise_gate: float = 0.012,
-                 initial_prompt: str = "", beam_size: int = 5) -> None:
+                 initial_prompt: str = "", beam_size: int = 5,
+                 asr_provider: str = "whisper",
+                 sensevoice_model: str = "iic/SenseVoiceSmall") -> None:
         self.model_name = model_name
         self.vad_filter = vad_filter
         self.target_peak = target_peak   # 低增益麦克风自动放大到该峰值
         self.noise_gate = noise_gate     # RMS 低于此值视为没说话
         self.initial_prompt = initial_prompt
         self.beam_size = beam_size
-        self._model = None
+        self.asr_provider = asr_provider  # "sensevoice"（推荐）| "whisper"
+        self.sensevoice_model = sensevoice_model
+        self._model = None                # whisper 懒加载
+        self._sv_model = None             # SenseVoice 懒加载
         self._cc = None                  # 繁→简转换器（懒加载）
 
     def _get_model(self):
         if self._model is None:
-            print("（首次使用正在加载语音模型…）")
+            print("（首次使用正在加载 whisper 模型…）")
             from faster_whisper import WhisperModel
 
             self._model = WhisperModel(self.model_name, device="cpu",
                                        compute_type="int8")
         return self._model
+
+    def _get_sensevoice(self):
+        """加载 SenseVoice（FunASR）。
+
+        sentencepiece 的 C++ 库无法读含中文用户名的路径，所以首次加载时把
+        ModelScope 缓存**复制到纯 ASCII 路径**（pc_daemon/models/sensevoice/）
+        再加载；模型缺失时先触发 ModelScope 下载（国内源）。"""
+        if self._sv_model is None:
+            import glob
+            import os as _os
+            import shutil
+
+            print("（首次使用正在加载 SenseVoice 语音模型…）")
+            target = BASE / "models" / "sensevoice"
+            if not (target / "model.pt").exists():
+                snaps = sorted(glob.glob(_os.path.expanduser(
+                    "~/.cache/modelscope/models/iic--SenseVoiceSmall/snapshots/*")))
+                if snaps:
+                    target.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(snaps[-1], target, dirs_exist_ok=True,
+                                    ignore=shutil.ignore_patterns("example", "fig"))
+                else:
+                    from modelscope import snapshot_download
+
+                    snap = snapshot_download("iic/SenseVoiceSmall")
+                    target.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(snap, target, dirs_exist_ok=True,
+                                    ignore=shutil.ignore_patterns("example", "fig"))
+            from funasr import AutoModel
+
+            self._sv_model = AutoModel(model=str(target), device="cpu",
+                                       disable_update=True)
+        return self._sv_model
 
     def transcribe(self, audio) -> str:
         import numpy as np
@@ -123,16 +161,30 @@ class Transcriber:
         peak = float(np.abs(audio).max())
         if 0.0 < peak < 0.5:                 # 增益过低时自动放大
             audio = audio * (self.target_peak / peak)
+        if self.asr_provider == "sensevoice":
+            text = self._sv_transcribe(audio)
+        else:
+            text = self._whisper_transcribe(audio)
+        if any(h in text for h in HALLUCINATIONS):
+            return ""                        # 幻觉文本按"没听清"处理
+        return self._to_simplified(text)
+
+    def _sv_transcribe(self, audio) -> str:
+        model = self._get_sensevoice()
+        res = model.generate(input=audio, language="zh", use_itn=True)
+        import re as _re
+
+        return _re.sub(r"<\|[^|]*\|>", "",
+                       (res[0]["text"] if res else "")).strip()
+
+    def _whisper_transcribe(self, audio) -> str:
         model = self._get_model()
         segments, _info = model.transcribe(
             audio, language="zh", vad_filter=self.vad_filter,
             beam_size=self.beam_size,
             condition_on_previous_text=False,
             initial_prompt=self.initial_prompt or None)
-        text = " ".join(s.text.strip() for s in segments).strip()
-        if any(h in text for h in HALLUCINATIONS):
-            return ""                        # 幻觉文本按"没听清"处理
-        return self._to_simplified(text)
+        return " ".join(s.text.strip() for s in segments).strip()
 
     def _to_simplified(self, text: str) -> str:
         """whisper 偶尔输出繁体 → OpenCC 转简体（库缺失时原样返回）。"""
@@ -591,7 +643,10 @@ def main() -> None:
     ear = Transcriber(cfg.get("whisper_model", "small"),
                   vad_filter=cfg.get("vad_filter", False),
                   initial_prompt=cfg.get("initial_prompt", ""),
-                  beam_size=cfg.get("beam_size", 5))
+                  beam_size=cfg.get("beam_size", 5),
+                  asr_provider=cfg.get("asr_provider", "whisper"),
+                  sensevoice_model=cfg.get("sensevoice_model",
+                                           "iic/SenseVoiceSmall"))
     mic = Recorder(cfg.get("sample_rate", 16000),
                   device=cfg.get("input_device"))
     muted = False

@@ -40,3 +40,6 @@ pc_daemon/companion_memory.json
 pc_daemon/briefing_state.json
 pc_daemon/companion_weather.json
 pc_daemon/daemon.lock
+
+# 本地模型副本（893MB 不入库）
+pc_daemon/models/

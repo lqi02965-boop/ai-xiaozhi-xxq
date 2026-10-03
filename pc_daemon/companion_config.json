@@ -28,5 +28,7 @@
     "配队",
     "打法",
     "灵敏度"
-  ]
+  ],
+  "asr_provider": "sensevoice",
+  "sensevoice_model": "iic/SenseVoiceSmall"
 }

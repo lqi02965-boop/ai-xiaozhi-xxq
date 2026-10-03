@@ -58,7 +58,12 @@ class ChatUI:
         self.cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         self.chat = Companion(self.cfg)
         self.ear = Transcriber(self.cfg.get("whisper_model", "small"),
-                               vad_filter=self.cfg.get("vad_filter", False))
+                               vad_filter=self.cfg.get("vad_filter", False),
+                               asr_provider=self.cfg.get("asr_provider",
+                                                         "whisper"),
+                               sensevoice_model=self.cfg.get(
+                                   "sensevoice_model",
+                                   "iic/SenseVoiceSmall"))
         self.tts = TTSEngine(self.cfg.get("tts", {}))
         self.mic = Recorder(self.cfg.get("sample_rate", 16000),
                             device=self.cfg.get("input_device"))
