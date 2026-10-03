@@ -139,7 +139,8 @@ def _persist_agent_flag(name: str, on: bool) -> None:
 
 
 def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
-                           approval, bus, runtime: dict) -> None:
+                           approval, bus, runtime: dict,
+                           bridge=None) -> None:
     # ---- Agent 管理：扫描/列表/添加/开关/移除 ----
     if action == "scan_agents":
         monitored = {m.agent: getattr(m, "acfg", {}) for m in monitors}
@@ -198,12 +199,46 @@ def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
     elif action == "status":
         resp = json.dumps({"ok": True,
                            "monitor": all(m.enabled for m in monitors)
-                           if monitors else False}) + "\n"
+                           if monitors else False,
+                           "audio_output": runtime.get("audio_output",
+                                                       "device")}) + "\n"
         conn.sendall(resp.encode("utf-8"))
+    elif action == "set_audio_output":
+        mode = cmd.get("mode", "device")
+        if mode not in ("pc", "device"):
+            conn.sendall(b'{"ok": false, "error": "mode must be pc|device"}\n')
+            return
+        runtime["audio_output"] = mode
+        cfg["audio_output"] = mode
+        try:
+            pconf = Path(__file__).parent / "config.json"
+            pconf.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        except Exception:
+            pass    # 持久化失败不影响运行（重启后回退旧值）
+        log.info("音频输出已切换: %s", mode)
+        resp = json.dumps({"ok": True, "audio_output": mode}) + "\n"
+        conn.sendall(resp.encode("utf-8"))
+    elif action == "play_stream":
+        # GUI 合成的 PCM → 按当前模式路由（device=串口流 / pc=本机播）
+        import base64
+
+        try:
+            pcm = base64.b64decode(cmd.get("pcm", ""))
+        except Exception:
+            pcm = b""
+        if not pcm:
+            conn.sendall(b'{"ok": false, "error": "empty pcm"}\n')
+            return
+        if runtime.get("audio_output") == "pc":
+            pc_player.play_pcm(pcm)
+        else:
+            bridge.send_audio_stream(pcm)
+        conn.sendall(b'{"ok": true}\n')
 
 
 def _control_port_loop(cfg, monitors, approval, stop: threading.Event,
-                       bus, runtime: dict) -> None:
+                       bus, runtime: dict, bridge=None) -> None:
     """本地控制端口（127.0.0.1:18765）：GUI 可远程开关 Agent 监视。
     仅监听回环地址，不暴露到网络。"""
     import socket
@@ -234,7 +269,7 @@ def _control_port_loop(cfg, monitors, approval, stop: threading.Event,
             action = cmd.get("cmd", "")
             try:
                 _handle_control_action(conn, cmd, action, cfg, monitors,
-                                       approval, bus, runtime)
+                                       approval, bus, runtime, bridge)
             except Exception:
                 # 任何命令异常都必须记录并保住端口线程（此前曾静默死亡）
                 log.exception("控制命令 %s 执行失败", action)
@@ -348,7 +383,8 @@ def main() -> None:
     threading.Thread(target=_briefing_loop, daemon=True,
                      args=(cfg, tts, bridge, stop)).start()
     threading.Thread(target=_control_port_loop, daemon=True,
-                     args=(cfg, monitors, approval, stop, bus, runtime)).start()
+                     args=(cfg, monitors, approval, stop, bus, runtime,
+                           bridge)).start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 
     try:
