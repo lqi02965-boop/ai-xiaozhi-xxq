@@ -64,14 +64,17 @@ def build_frame(kind: str, text: str, sounds: dict) -> dict:
 
 
 def worker(bus: EventBus, engine: PromptEngine, tts, bridge: SerialBridge,
-           sounds: dict, output_mode: str, stop: threading.Event) -> None:
-    """事件循环：事件 → 播报词 → 出声（PC 本机 / 小智设备，按配置切换）。"""
+           sounds: dict, runtime: dict, stop: threading.Event) -> None:
+    """事件循环：事件 → 播报词 → 出声（PC 本机 / 小智设备，按 runtime 切换）。"""
+    output_mode = runtime.get("audio_output", "device")
+    last_mode = output_mode
     while not stop.is_set():
         item = bus.get(timeout=1.0)
         if item is SKIP:
             continue
         if item is None:
             break
+        output_mode = runtime.get("audio_output", "device")   # 实时读取
         text = engine.gen(item)
         pcm = tts.synthesize(text) if tts else None
         if output_mode == "pc":
@@ -136,7 +139,7 @@ def _persist_agent_flag(name: str, on: bool) -> None:
 
 
 def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
-                           approval, bus) -> None:
+                           approval, bus, runtime: dict) -> None:
     # ---- Agent 管理：扫描/列表/添加/开关/移除 ----
     if action == "scan_agents":
         monitored = {m.agent: getattr(m, "acfg", {}) for m in monitors}
@@ -200,7 +203,7 @@ def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
 
 
 def _control_port_loop(cfg, monitors, approval, stop: threading.Event,
-                       bus) -> None:
+                       bus, runtime: dict) -> None:
     """本地控制端口（127.0.0.1:18765）：GUI 可远程开关 Agent 监视。
     仅监听回环地址，不暴露到网络。"""
     import socket
@@ -231,7 +234,7 @@ def _control_port_loop(cfg, monitors, approval, stop: threading.Event,
             action = cmd.get("cmd", "")
             try:
                 _handle_control_action(conn, cmd, action, cfg, monitors,
-                                       approval, bus)
+                                       approval, bus, runtime)
             except Exception:
                 # 任何命令异常都必须记录并保住端口线程（此前曾静默死亡）
                 log.exception("控制命令 %s 执行失败", action)
@@ -337,14 +340,15 @@ def main() -> None:
     if cfg.get("approval_watch", {}).get("enabled", True):
         approval = ApprovalWatcher(cfg.get("approval_watch", {}), bus)
         approval.start()
+    runtime = {"audio_output": cfg.get("audio_output", "device")}
     t = threading.Thread(target=worker, daemon=True,
                          args=(bus, engine, tts, bridge, cfg["sounds"],
-                               cfg.get("audio_output", "device"), stop))
+                               runtime, stop))
     t.start()
     threading.Thread(target=_briefing_loop, daemon=True,
                      args=(cfg, tts, bridge, stop)).start()
     threading.Thread(target=_control_port_loop, daemon=True,
-                     args=(cfg, monitors, approval, stop, bus)).start()
+                     args=(cfg, monitors, approval, stop, bus, runtime)).start()
     log.info("守护进程启动（dry-run=%s demo=%s）", args.dry_run, args.demo)
 
     try:

@@ -70,10 +70,12 @@ class ChatUI:
         self.muted = False
         self.recording = False
         self.busy = False
+        self.audio_out = None          # "pc" | "device"（启动后从守护进程查询）
         self.cancel_event = threading.Event()   # 打断对话的取消令牌
         self.ui_q: "queue.Queue[tuple]" = queue.Queue()
 
         self._build_widgets()
+        self.root.after(600, self._sync_output_button)   # 守护进程就绪后同步显示
         self.root.after(100, self._poll_ui)
         self._sys("💡 点「🎤 说话」按钮开始语音聊天；或直接在下方打字（也支持 Win+H 语音听写）")
 
@@ -177,6 +179,40 @@ class ChatUI:
                                   relief="flat", bd=0, cursor="hand2",
                                   font=("微软雅黑", 11))
         self.send_btn.pack(side="right", ipady=3)
+        self.out_btn = tk.Button(input_bar, text="🔊 输出:查询中", width=14,
+                                 command=self.cycle_audio_output,
+                                 relief="flat", bd=0, bg="#FFF8E1",
+                                 fg="#8D6E63", cursor="hand2",
+                                 font=("微软雅黑", 10))
+        self.out_btn.pack(side="left")
+
+    # ---------- 声音输出切换 ----------
+    def _query_audio_output(self) -> str | None:
+        resp = self._monitor_cmd("status")
+        if resp and resp.get("ok"):
+            return resp.get("audio_output", "device")
+        return None
+
+    def cycle_audio_output(self) -> None:
+        """🖥️ 电脑音箱 ↔ 🔊 小智喇叭 一键切换（写守护进程配置并即时生效）。"""
+        cur = self._query_audio_output() or "device"
+        new = "pc" if cur == "device" else "device"
+        resp = self._monitor_cmd("set_audio_output", mode=new)
+        if resp and resp.get("ok"):
+            self.audio_out = new
+            label = "🖥️ 电脑音箱" if new == "pc" else "🔊 小智喇叭"
+            self.out_btn.config(text=f"🔊 输出:{label}")
+            self._sys(f"（声音输出已切换：{label}）")
+        else:
+            self._set_status("⚠️ 切换失败：守护进程未连接")
+
+    def _sync_output_button(self) -> None:
+        mode = self._query_audio_output()
+        if mode is None:
+            return
+        self.audio_out = mode
+        label = "🖥️ 电脑音箱" if mode == "pc" else "🔊 小智喇叭"
+        self.out_btn.config(text=f"🔊 输出:{label}")
 
     # ---------- 工具 ----------
     def _append(self, who: str, text: str) -> None:
@@ -364,7 +400,13 @@ class ChatUI:
         self.ui_q.put(("status", "🔊 播放中…（点🎤可打断）"))
         pcm = self.tts.synthesize(sanitize_for_tts(reply))
         if pcm and not ce.is_set():
-            pc_player.play_pcm(pcm)
+            mode = self.audio_out or self._query_audio_output() or "pc"
+            if mode == "pc":
+                pc_player.play_pcm(pcm)             # 电脑音箱
+            else:
+                import base64
+                self._monitor_cmd("play_stream", pcm=base64.b64encode(pcm).decode())
+                self._set_status("🔊 小智播放中…")
         self.ui_q.put(("status", "💡 点「🎤 说话」开始"))
         self.busy = False
 
