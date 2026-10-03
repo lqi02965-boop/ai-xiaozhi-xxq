@@ -125,10 +125,11 @@ class ChatUI:
             selectbackground=self.C_LEMON, padx=12, pady=10,
             spacing1=4, spacing3=6)
         self._last_reply = ""
-        self.history.pack(fill="both", expand=True, **pad)
+        # pack 移到 _build_widgets 末尾：底部控件先占位，聊天区填剩余
         self.history.tag_config("you", foreground="#E65100")     # 柚子橙
         self.history.tag_config("ai", foreground="#33691E")      # 柠檬叶绿
         self.history.tag_config("sys", foreground="#B0A890")
+        self.history.pack(fill="both", expand=True, **pad)
 
         bar = tk.Frame(self.root, bg=self.C_BG)
         bar.pack(fill="x", **pad)
@@ -159,9 +160,9 @@ class ChatUI:
                                bg=self.C_BG, font=("微软雅黑", 10))
         self.status.pack(side="right", padx=6)
 
-        # 多行输入框（Ctrl+回车 发送）
+        # 多行输入框（Ctrl+回车 发送）——先打包底部控件，保证可见
         input_frame = tk.Frame(self.root, bg=self.C_BG)
-        input_frame.pack(fill="both", padx=8, pady=(0, 4))
+        input_frame.pack(side="bottom", fill="x", padx=8, pady=(0, 4))
         self.entry = tk.Text(input_frame, font=("微软雅黑", 11), height=4,
                              wrap="word", bg="#FFFEF7", fg=self.C_TEXT,
                              relief="flat", bd=0, highlightthickness=1,
@@ -170,9 +171,9 @@ class ChatUI:
         self.entry.bind("<Control-Return>", self.send_text)
         hint = tk.Label(self.root, text="Ctrl+回车 发送 ｜ 回车换行 🍋",
                         fg="#C0C0A0", bg=self.C_BG, font=("微软雅黑", 9))
-        hint.pack(anchor="e", padx=10)
+        hint.pack(side="bottom", anchor="e", padx=10)
         input_bar = tk.Frame(self.root, bg=self.C_BG)
-        input_bar.pack(fill="x", padx=8, pady=(0, 8))
+        input_bar.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
         self.send_btn = tk.Button(input_bar, text="🍋 发送", width=10,
                                   command=self.send_text, bg=self.C_POMELO,
                                   fg="#5D4037", activebackground=self.C_LEMON,
