@@ -25,6 +25,7 @@ class SerialBridge:
                                         name="serial-bridge")
         self._connected = threading.Event()
         self._ser = None
+        self._in_stream = False             # 音频流传输中（暂停心跳）
 
     # ---- 对外接口 -------------------------------------------------------
     def start(self) -> None:
@@ -59,18 +60,23 @@ class SerialBridge:
             return
 
         def _emit() -> None:
-            self._write_raw((json.dumps(header) + "\n").encode("utf-8"))
-            time.sleep(0.3)    # 让设备先处理 JSON 头（设备 20ms 轮询 + 余量）
-            offset = 0
-            while offset < len(pcm):
-                block = pcm[offset:offset + chunk_size]
-                self._write_raw(block)
-                got = self._wait_stream_ack(offset + len(block))
-                if got is None:
-                    log.warning("块 ack 异常（offset=%d），中止本次语音下发", offset)
-                    return
-                offset = got
-            log.info("音频流下发完成: %d bytes", offset)
+            self._in_stream = True              # 暂停心跳（ping 会污染音频流）
+            try:
+                self._write_raw((json.dumps(header) + "\n").encode("utf-8"))
+                time.sleep(0.3)    # 让设备先处理 JSON 头（设备 20ms 轮询 + 余量）
+                offset = 0
+                while offset < len(pcm):
+                    block = pcm[offset:offset + chunk_size]
+                    self._write_raw(block)
+                    got = self._wait_stream_ack(offset + len(block))
+                    if got is None:
+                        log.warning("块 ack 异常（offset=%d），中止本次语音下发", offset)
+                        return
+                    offset = got
+                log.info("音频流下发完成: %d bytes", offset)
+            finally:
+                self._in_stream = False
+                time.sleep(0.2)                # 缓冲，避免心跳立刻涌入
 
         self._q.put(("__raw__", _emit))   # 队列里放一个动作，保持发送串行化
 
@@ -187,7 +193,8 @@ class SerialBridge:
         try:
             while not self._stop.is_set():
                 now = time.time()
-                if now - last_hb >= self.cfg.get("heartbeat_sec", 2):
+                if now - last_hb >= self.cfg.get("heartbeat_sec", 2) \
+                        and not self._in_stream:
                     try:
                         self._write(ser, {"v": 1, "type": "ping",
                                           "seq": self._next_seq(), "data": {}})
