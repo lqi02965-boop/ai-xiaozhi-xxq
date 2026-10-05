@@ -400,7 +400,8 @@ def main() -> None:
 
     monitors = []
     for name, acfg in cfg.get("agents", {}).items():
-        if not acfg.get("log_dir"):
+        # sources 型配置（多数据源，如 workbuddy）没有顶层 log_dir，同样放行
+        if not acfg.get("log_dir") and not acfg.get("sources"):
             log.info("跳过未配置的 agent: %s", name)
             continue
         m = AgentMonitor(name, acfg, bus,

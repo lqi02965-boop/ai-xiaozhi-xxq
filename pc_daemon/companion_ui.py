@@ -631,9 +631,8 @@ class AgentsWindow(tk.Toplevel):
             if not info.get("log_ready"):
                 fail.append(f"{n}(日志目录不存在)")
                 continue
-            payload = {k: info.get(k) for k in ("name", "log_dir", "pattern",
-                                                "event_field", "event_match",
-                                                "detail_field")}
+            skip = {"detected", "log_ready", "monitored", "home"}
+            payload = {k: v for k, v in info.items() if k not in skip}
             resp = self.ui._monitor_cmd("add_agent", agent=payload)
             (ok if resp and resp.get("ok") else fail).append(n)
         for n in to_disable:

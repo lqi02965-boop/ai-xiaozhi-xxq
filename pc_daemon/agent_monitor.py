@@ -99,6 +99,37 @@ class _ZstdCursor:
         return new
 
 
+class _StateCursor:
+    """状态文件游标（watch=state）：整个文件是一份 JSON 状态快照
+    （如 workbuddy 的 tasks/N.json，status 字段标记任务阶段）。
+
+    mtime/size 变化 → 整文件重读、作为一条记录交规则分类（event_field 指
+    status 之类字段）。首见只记基线不报（与 _ZstdCursor 同语义，防启动误报）。
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.sig = None          # (mtime_ns, size)
+
+    def read_new_lines(self) -> list[str]:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return []
+        sig = (st.st_mtime_ns, st.st_size)
+        if self.sig is None:
+            self.sig = sig       # 基线
+            return []
+        if sig == self.sig:
+            return []
+        self.sig = sig
+        try:
+            text = self.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        return [text] if text.strip() else []
+
+
 class ApprovalWatcher(threading.Thread):
     """审批/提问等待监控（轮询 ZCode 的 db.sqlite part 表）。
 
@@ -190,18 +221,31 @@ class AgentMonitor(threading.Thread):
                  cooldown_sec: float = 30.0) -> None:
         super().__init__(daemon=True, name=f"monitor-{agent}")
         self.agent = agent
-        self.dir = Path(acfg["log_dir"]).expanduser()
-        self.pattern = acfg.get("log_pattern", "*.jsonl")
-        self.event_field = acfg.get("event_field", "event")
-        self.session_field = acfg.get("session_field", "sessionId")
-        self.event_match = acfg.get("event_match") or {}    # {kind: [事件值子串]}
-        self.data_match = acfg.get("data_match") or {}      # {kind: {字段点路径: [允许值]}}
-        self.detail_field = acfg.get("detail_field", "")
+        self.display = acfg.get("display", agent)    # 播报用名（默认同 key）
+        self.acfg = dict(acfg)              # 本 agent 完整配置（扫描回显用）
+        # 多数据源：sources 数组每项可覆盖 log_dir/pattern/事件规则；
+        # 单数据源的旧格式（log_dir+log_pattern/pattern）自动降为单项。
+        srcs = acfg.get("sources") or [{"log_dir": acfg["log_dir"]}]
+        self.sources: list[dict] = []
+        for s in srcs:
+            merged = {**acfg, **s}
+            self.sources.append({
+                "dir": Path(merged["log_dir"]).expanduser(),
+                "pattern": merged.get("log_pattern",
+                                      merged.get("pattern", "*.jsonl")),
+                "watch": merged.get("watch", ""),
+                "event_field": merged.get("event_field", "event"),
+                "event_match": merged.get("event_match") or {},
+                "data_match": merged.get("data_match") or {},
+                "detail_field": merged.get("detail_field", ""),
+            })
+        self.dir = self.sources[0]["dir"]            # 兼容旧引用
+        self.pattern = self.sources[0]["pattern"]
         self.bus = bus
         self.poll_interval = poll_interval
         self.cooldown_sec = cooldown_sec
-        self.acfg = dict(acfg)              # 本 agent 完整配置（扫描回显用）
-        self._cursors: dict[Path, _FileCursor] = {}
+        # 每个源独立游标表——若共用一张表，A 源的"消失文件清理"会删掉 B 源的游标
+        self._cursors: list[dict] = [dict() for _ in self.sources]
         self._last_emit: dict[tuple[str, str, str], float] = {}
         self._stop = threading.Event()
         self.enabled = not acfg.get("disabled", False)   # GUI 可远程开关
@@ -221,26 +265,27 @@ class AgentMonitor(threading.Thread):
         return cur
 
     # ---- 事件规则 -------------------------------------------------------
-    def _classify(self, rec: dict) -> tuple[str, str] | None:
+    def _classify(self, rec: dict, src: dict) -> tuple[str, str] | None:
         """返回 (kind, detail)；不关心的事件返回 None。
 
         数据驱动模式（workbuddy / dsh 等）：event_match 命中即候选，
         data_match 可选地对嵌套字段做值校验（如 turn/end 的 reason.kind）。
+        规则字段按数据源读取（多源 agent 的每个源可各自指定）。
         zcode 型（默认规则）：turn.completed→done、error 级→报错；
         用户要求（2026-09-27）：只提醒「最终任务完成 / 报错」，轮询小任务不提醒。
         """
-        ev = rec.get(self.event_field, "")
-        if self.event_match:
-            for kind, patterns in self.event_match.items():
+        ev = rec.get(src["event_field"], "")
+        if src["event_match"]:
+            for kind, patterns in src["event_match"].items():
                 if not any(p in ev for p in patterns):
                     continue
-                dm = self.data_match.get(kind)
+                dm = src["data_match"].get(kind)
                 if dm:
                     ok = all(str(self._dig(rec, path)) in (vals if isinstance(vals, list) else [vals])
                              for path, vals in dm.items())
                     if not ok:
                         continue    # 事件值命中但数据条件不符（如 aborted 的 turn/end）
-                detail = str(rec.get(self.detail_field, "") or ev)[:80]
+                detail = str(rec.get(src["detail_field"], "") or ev)[:80]
                 return kind, detail
             return None
         if ev == "turn.completed":
@@ -259,13 +304,15 @@ class AgentMonitor(threading.Thread):
             log.debug("冷却中，丢弃: %s %s", key, detail)
             return
         self._last_emit[key] = now
-        self.bus.put(AgentEvent(kind=kind, agent=self.agent,
+        self.bus.put(AgentEvent(kind=kind, agent=self.display,
                                 session_id=session_id, detail=detail))
-        log.info("事件: [%s/%s] %s %s", self.agent, kind, session_id[:13], detail)
+        log.info("事件: [%s/%s] %s %s", self.display, kind, session_id[:13], detail)
 
     # ---- 主循环 ---------------------------------------------------------
     def run(self) -> None:
-        log.info("监听启动: %s/%s", self.dir, self.pattern)
+        for src in self.sources:
+            log.info("监听启动: %s/%s%s", src["dir"], src["pattern"],
+                     "（状态文件）" if src["watch"] == "state" else "")
         while not self._stop.is_set():
             try:
                 self._poll_once()
@@ -277,16 +324,26 @@ class AgentMonitor(threading.Thread):
     def _poll_once(self) -> None:
         if not self.enabled:
             return
-        recursive = "**" in self.pattern
-        files = {Path(p) for p in glob.glob(str(self.dir / self.pattern),
+        for idx, src in enumerate(self.sources):
+            self._poll_source(idx, src)
+
+    def _poll_source(self, idx: int, src: dict) -> None:
+        cur_map = self._cursors[idx]
+        recursive = "**" in src["pattern"]
+        files = {Path(p) for p in glob.glob(str(src["dir"] / src["pattern"]),
                                             recursive=recursive)}
-        # 只保留普通文件，且清理已消失文件
+        # 只保留普通文件，且清理已消失文件（仅在本源自己的游标表里）
         files = {p for p in files if p.is_file()}
-        for gone in set(self._cursors) - files:
-            self._cursors.pop(gone, None)
+        for gone in set(cur_map) - files:
+            cur_map.pop(gone, None)
         for path in files:
-            cls = _ZstdCursor if path.suffix == ".zstd" else _FileCursor
-            cur = self._cursors.setdefault(path, cls(path))
+            if src["watch"] == "state":
+                cls = _StateCursor
+            elif path.suffix == ".zstd":
+                cls = _ZstdCursor
+            else:
+                cls = _FileCursor
+            cur = cur_map.setdefault(path, cls(path))
             for line in cur.read_new_lines():
                 line = line.strip()
                 if not line:
@@ -297,7 +354,7 @@ class AgentMonitor(threading.Thread):
                     continue  # 半行/损坏行，跳过
                 if not isinstance(rec, dict):
                     continue
-                kind_detail = self._classify(rec)
+                kind_detail = self._classify(rec, src)
                 if kind_detail:
                     kind, detail = kind_detail
                     self._emit(kind, str(rec.get("sessionId", "")), detail)

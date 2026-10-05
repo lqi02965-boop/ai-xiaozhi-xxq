@@ -26,9 +26,10 @@ ACFG = {
 
 def main() -> None:
     bus = EventBus()
-    m = AgentMonitor("dsh", ACFG, bus, cooldown_sec=0)   # 单测关冷却
-    m.dir = Path(tempfile.mkdtemp())
-    zf = m.dir / "session.v4.jsonl.zstd"
+    root = Path(tempfile.mkdtemp())
+    cfg = dict(ACFG, log_dir=str(root))
+    m = AgentMonitor("dsh", cfg, bus, cooldown_sec=0)   # 单测关冷却
+    zf = root / "session.v4.jsonl.zstd"
 
     def write(lines):
         zf.write_bytes(zstandard.ZstdCompressor().compress(
