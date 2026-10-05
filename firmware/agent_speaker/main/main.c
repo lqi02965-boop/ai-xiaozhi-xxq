@@ -18,6 +18,7 @@
 #include "esp_app_desc.h"
 #include "cdc_link.h"
 #include "i2s_player.h"
+#include "oled_display.h"
 
 static const char *TAG = "agent_speaker";
 
@@ -33,6 +34,15 @@ void app_main(void)
     /* V1-102：初始化 I2S 播放器（MAX98357A），随后 CDC 指令即可出声 */
     if (i2s_player_init() != ESP_OK) {
         ESP_LOGE(TAG, "I2S 播放器初始化失败");
+    }
+    /* V1.6：OLED 状态屏（SSD1306 I2C）；开机画面失败不影响主流程 */
+    if (oled_init()) {
+        oled_text(0, "YunXiaoXiao");
+        oled_text(1, "v1.6 mic+oled");
+        oled_text(3, "PC link ready");
+        oled_flush();
+    } else {
+        ESP_LOGW(TAG, "OLED 未就绪（I2C 无设备？不影响语音功能）");
     }
     /* 启动 USB-CDC 指令通道（V1-105）：PC 可发 ping/play_sound/status */
     if (cdc_link_start() != ESP_OK) {

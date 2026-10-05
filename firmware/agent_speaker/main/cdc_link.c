@@ -8,6 +8,7 @@
 #include "cdc_link.h"
 #include "i2s_player.h"
 #include "mic_in.h"
+#include "oled_display.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -201,6 +202,10 @@ static void handle_line(const char *line)
     } else if (strcmp(type->valuestring, "mic_stop") == 0) {
         mic_in_stop();
         cdc_send_ack(peer_seq, true);
+    } else if (strcmp(type->valuestring, "oled") == 0) {
+        const cJSON *data = cJSON_GetObjectItem(root, "data");
+        oled_show_lines(data ? cJSON_GetObjectItem(data, "lines") : NULL);
+        cdc_send_ack(peer_seq, true);
     } else if (strcmp(type->valuestring, "status") == 0) {
         cJSON *data = cJSON_CreateObject();
         cJSON_AddStringToObject(data, "state", "idle");
@@ -208,6 +213,7 @@ static void handle_line(const char *line)
         cJSON_AddStringToObject(data, "fw", FW_VERSION);
         cJSON_AddNumberToObject(data, "proto", 1);
         cJSON_AddBoolToObject(data, "mic", mic_in_busy());
+        cJSON_AddBoolToObject(data, "oled", oled_ready());
         cdc_send_frame("status", data);
     } else {
         ESP_LOGW(TAG, "unknown type: %s", type->valuestring);

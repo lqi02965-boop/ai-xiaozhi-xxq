@@ -283,6 +283,16 @@ def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
         resp = json.dumps({"ok": True, "bytes": len(pcm),
                            "pcm": base64.b64encode(pcm).decode()}) + "\n"
         conn.sendall(resp.encode("utf-8"))
+    elif action == "oled_show":
+        # GUI/测试推送 OLED 文字行：透传给固件（ASCII，最多 8 行）
+        lines = cmd.get("lines", [])
+        if not isinstance(lines, list):
+            conn.sendall(b'{"ok": false, "error": "lines must be array"}\n')
+            return
+        bridge.send({"v": 1, "type": "oled", "data": {"lines": lines}})
+        resp = json.dumps({"ok": True, "lines": len(lines)},
+                          ensure_ascii=False) + "\n"
+        conn.sendall(resp.encode("utf-8"))
     elif action == "play_stream":
         # GUI 合成的 PCM → 按当前模式路由（device=串口流 / pc=本机播）
         import base64
