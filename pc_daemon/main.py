@@ -232,7 +232,9 @@ def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
                            "monitor": all(m.enabled for m in monitors)
                            if monitors else False,
                            "audio_output": runtime.get("audio_output",
-                                                       "device")}) + "\n"
+                                                       "device"),
+                           "audio_input": runtime.get("audio_input",
+                                                      "pc")}) + "\n"
         conn.sendall(resp.encode("utf-8"))
     elif action == "set_audio_output":
         mode = cmd.get("mode", "device")
@@ -249,6 +251,37 @@ def _handle_control_action(conn, cmd: dict, action: str, cfg, monitors: list,
             pass    # 持久化失败不影响运行（重启后回退旧值）
         log.info("音频输出已切换: %s", mode)
         resp = json.dumps({"ok": True, "audio_output": mode}) + "\n"
+        conn.sendall(resp.encode("utf-8"))
+    elif action == "set_audio_input":
+        mode = cmd.get("mode", "pc")
+        if mode not in ("pc", "device"):
+            conn.sendall(b'{"ok": false, "error": "mode must be pc|device"}\n')
+            return
+        runtime["audio_input"] = mode
+        cfg["audio_input"] = mode
+        try:
+            pconf = Path(__file__).parent / "config.json"
+            pconf.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        except Exception:
+            pass    # 持久化失败不影响运行（重启后回退旧值）
+        log.info("音频输入已切换: %s", mode)
+        resp = json.dumps({"ok": True, "audio_input": mode}) + "\n"
+        conn.sendall(resp.encode("utf-8"))
+    elif action == "mic_start":
+        if bridge is None:
+            conn.sendall(b'{"ok": false, "error": "no bridge"}\n')
+            return
+        bridge.mic_begin(sample_rate=cmd.get("sr", 16000),
+                         shift=cmd.get("shift", 14))
+        conn.sendall(b'{"ok": true}\n')
+    elif action == "mic_stop":
+        # 返回整段录音（base64 PCM 16k/16bit/mono），GUI 直接转写
+        import base64
+
+        pcm = bridge.mic_end() if bridge else b""
+        resp = json.dumps({"ok": True, "bytes": len(pcm),
+                           "pcm": base64.b64encode(pcm).decode()}) + "\n"
         conn.sendall(resp.encode("utf-8"))
     elif action == "play_stream":
         # GUI 合成的 PCM → 按当前模式路由（device=串口流 / pc=本机播）
@@ -417,7 +450,8 @@ def main() -> None:
     if cfg.get("approval_watch", {}).get("enabled", True):
         approval = ApprovalWatcher(cfg.get("approval_watch", {}), bus)
         approval.start()
-    runtime = {"audio_output": cfg.get("audio_output", "device")}
+    runtime = {"audio_output": cfg.get("audio_output", "device"),
+               "audio_input": cfg.get("audio_input", "pc")}
     t = threading.Thread(target=worker, daemon=True,
                          args=(bus, engine, tts, bridge, cfg["sounds"],
                                runtime, stop))

@@ -26,6 +26,57 @@ class SerialBridge:
         self._connected = threading.Event()
         self._ser = None
         self._in_stream = False             # 音频流传输中（暂停心跳）
+        # 板麦采集（v1.6）：mic_start/mic_stop 期间收 mic_data 帧并缓存 PCM
+        self._mic_active = False
+        self._mic_buf = bytearray()
+        self._mic_lock = threading.Lock()
+        self._rx_tail = b""                 # 会话内半行残留
+
+    # ---- 板麦采集 ---------------------------------------------------------
+    def mic_begin(self, sample_rate: int = 16000, shift: int = 14) -> None:
+        """开始板麦录音：清缓存、标记活跃、向设备发 mic_start。"""
+        with self._mic_lock:
+            self._mic_buf.clear()
+            self._mic_active = True
+        self.send({"v": 1, "type": "mic_start",
+                   "data": {"sr": sample_rate, "shift": shift}})
+
+    def mic_end(self) -> bytes:
+        """结束录音：停设备流、返回缓存的全量 PCM（16k/16bit/mono）。"""
+        self.send({"v": 1, "type": "mic_stop", "data": {}})
+        with self._mic_lock:
+            self._mic_active = False
+            data = bytes(self._mic_buf)
+            self._mic_buf.clear()
+        log.info("板麦录音结束: %d bytes ≈ %.1fs", len(data),
+                 len(data) / 32000)
+        return data
+
+    def _handle_board_line(self, line: bytes) -> None:
+        """解析设备上行帧：mic_data 缓存 PCM，其余（pong/ack）忽略。"""
+        if not self._mic_active:
+            return
+        line = line.strip()
+        if not line.startswith(b"{"):
+            return
+        try:
+            frame = json.loads(line.decode("utf-8", "replace"))
+        except json.JSONDecodeError:
+            return
+        if frame.get("type") != "mic_data":
+            return
+        import base64
+
+        try:
+            pcm = base64.b64decode(frame.get("data", {}).get("pcm", ""))
+        except Exception:
+            return
+        with self._mic_lock:
+            if not self._mic_active:
+                return
+            if len(self._mic_buf) + len(pcm) > 2_000_000:   # 60s 上限防失控
+                return
+            self._mic_buf.extend(pcm)
 
     # ---- 对外接口 -------------------------------------------------------
     def start(self) -> None:
@@ -189,6 +240,10 @@ class SerialBridge:
         self._ser = ser
         log.info("串口已连接: %s", port)
         self._connected.set()
+        try:
+            ser.set_buffer_size(rx_size=131072)   # 板麦 90KB/s 流，默认 4K 会溢出
+        except Exception:
+            pass
         last_hb = 0.0
         try:
             while not self._stop.is_set():
@@ -202,8 +257,15 @@ class SerialBridge:
                         log.warning("心跳写入失败（疑似断线）: %s", e)
                         break       # 退出会话 → 上层重连
                     last_hb = now
+                # 收线路：读设备上行（板麦 mic_data / pong / ack），残留半行留缓冲
+                waiting = ser.in_waiting
+                if waiting:
+                    self._rx_tail += ser.read(waiting)
+                    while b"\n" in self._rx_tail:
+                        line, self._rx_tail = self._rx_tail.split(b"\n", 1)
+                        self._handle_board_line(line)
                 try:
-                    item = self._q.get(timeout=0.2)
+                    item = self._q.get(timeout=0.05 if self._mic_active else 0.2)
                 except queue.Empty:
                     continue
                 if item is None:

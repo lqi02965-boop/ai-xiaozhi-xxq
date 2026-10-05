@@ -205,15 +205,44 @@ class ChatUI:
                                  fg="#8D6E63", cursor="hand2",
                                  font=("微软雅黑", 10))
         self.out_btn.pack(side="left")
+        self.in_btn = tk.Button(input_bar, text="🎤 输入:查询中", width=14,
+                                command=self.cycle_audio_input,
+                                relief="flat", bd=0, bg="#FFF8E1",
+                                fg="#8D6E63", cursor="hand2",
+                                font=("微软雅黑", 10))
+        self.in_btn.pack(side="left", padx=(6, 0))
         # 聊天区最后打包：只吃剩余空间，任何窗口尺寸下底部控件都可见
         self.history.pack(fill="both", expand=True, **pad)
 
-    # ---------- 声音输出切换 ----------
+    # ---------- 声音输出/输入切换 ----------
     def _query_audio_output(self) -> str | None:
         resp = self._monitor_cmd("status")
         if resp and resp.get("ok"):
             return resp.get("audio_output", "device")
         return None
+
+    def cycle_audio_input(self) -> None:
+        """🎤 电脑麦克风 ↔ 小智耳朵（板载 INMP441）一键切换。"""
+        resp = self._monitor_cmd("status")
+        cur = (resp or {}).get("audio_input", "pc") if resp and resp.get("ok") \
+            else (self.audio_in or "pc")
+        new = "device" if cur == "pc" else "pc"
+        r2 = self._monitor_cmd("set_audio_input", mode=new)
+        if r2 and r2.get("ok"):
+            self.audio_in = new
+            label = "🖥️ 电脑麦" if new == "pc" else "🔊 小智耳朵"
+            self.in_btn.config(text=f"🎤 输入:{label}")
+            self._sys(f"（语音输入已切换：{label}）")
+        else:
+            self._set_status("⚠️ 切换失败：守护进程未连接")
+
+    def _sync_input_button(self, status: dict) -> None:
+        self.audio_in = status.get("audio_input", "pc")
+        label = "🖥️ 电脑麦" if self.audio_in == "pc" else "🔊 小智耳朵"
+        self.in_btn.config(text=f"🎤 输入:{label}")
+        self.audio_out = status.get("audio_output", "device")
+        label2 = "🖥️ 电脑音箱" if self.audio_out == "pc" else "🔊 小智喇叭"
+        self.out_btn.config(text=f"🔊 输出:{label2}")
 
     def cycle_audio_output(self) -> None:
         """🖥️ 电脑音箱 ↔ 🔊 小智喇叭 一键切换（写守护进程配置并即时生效）。"""
@@ -229,12 +258,9 @@ class ChatUI:
             self._set_status("⚠️ 切换失败：守护进程未连接")
 
     def _sync_output_button(self) -> None:
-        mode = self._query_audio_output()
-        if mode is None:
-            return
-        self.audio_out = mode
-        label = "🖥️ 电脑音箱" if mode == "pc" else "🔊 小智喇叭"
-        self.out_btn.config(text=f"🔊 输出:{label}")
+        resp = self._monitor_cmd("status")
+        if resp and resp.get("ok"):
+            self._sync_input_button(resp)
 
     # ---------- 工具 ----------
     def _append(self, who: str, text: str) -> None:
@@ -268,15 +294,21 @@ class ChatUI:
 
     # ---------- Agent 监视开关（跨进程控制守护进程） ----------
     def _monitor_cmd(self, action: str, **extra):
-        """向守护进程控制端口(127.0.0.1:18765)发命令；失败返回 None。"""
+        """向守护进程控制端口(127.0.0.1:18765)发命令；失败返回 None。
+        mic_stop 会带 ~200KB 录音，必须循环 recv 到完整一行。"""
         import socket
 
         try:
-            with socket.create_connection(("127.0.0.1", 18765), timeout=3) as sck:
+            with socket.create_connection(("127.0.0.1", 18765), timeout=10) as sck:
                 payload = {"cmd": action, **extra}
                 frame = json.dumps(payload, ensure_ascii=False) + "\n"
                 sck.sendall(frame.encode("utf-8"))
-                data = sck.recv(65536).decode("utf-8", "replace").strip()
+                data = b""
+                while b"\n" not in data:
+                    chunk = sck.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
                 if data:
                     return json.loads(data.splitlines()[0])
         except Exception:
@@ -367,24 +399,51 @@ class ChatUI:
         self.busy = False
 
     # ---------- 语音 ----------
+    def _start_rec(self) -> bool:
+        """按当前输入源开始录音（板麦走守护进程串口，电脑麦走本机声卡）。"""
+        if self.audio_in == "device":
+            r = self._monitor_cmd("mic_start")
+            if not (r and r.get("ok")):
+                self._set_status("⚠️ 板麦启动失败（守护进程/串口未连）")
+                return False
+            return True
+        self.mic.start()
+        return True
+
+    def _stop_rec(self):
+        """结束录音，返回 float32 音频数组（16k）或 None。"""
+        if self.audio_in == "device":
+            import base64
+            import numpy as np
+
+            r = self._monitor_cmd("mic_stop")
+            if r and r.get("ok") and r.get("pcm"):
+                pcm = base64.b64decode(r["pcm"])
+                return np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768
+            return None
+        return self.mic.stop()
+
     def toggle_voice(self) -> None:
         # 云小小正在说话/思考 → 点 🎤 = 打断并直接开始录音（抢话）
         if self.busy:
             self.interrupt()
+            if not self._start_rec():
+                return
             self.voice_btn.config(text="⏹ 结束", bg="#FFE0B2")
             self.recording = True
-            self.mic.start()
             self._set_status("🎙️ 已打断，录音中…说完点「结束」")
             return
         if not self.recording:
-            self.mic.start()
+            if not self._start_rec():
+                return
             self.recording = True
             self.voice_btn.config(text="⏹ 结束", bg="#FFE0B2")
-            self._set_status("🎙️ 录音中…说完点「结束」")
+            src = "小智耳朵" if self.audio_in == "device" else "电脑麦"
+            self._set_status(f"🎙️ {src}录音中…说完点「结束」")
         else:
             self.recording = False
             self.voice_btn.config(text="🍊 说话", bg=self.C_POMELO)
-            audio = self.mic.stop()
+            audio = self._stop_rec()
             threading.Thread(target=self._voice_pipeline, args=(audio,),
                              daemon=True).start()
 
