@@ -93,12 +93,43 @@ def worker(bus: EventBus, engine: PromptEngine, tts, bridge: SerialBridge,
                 "interrupt": True, "text": text}})
 
 
-def acquire_lock(lock_path: Path) -> bool:
-    """单实例保护：daemon.lock 存在即认为已有实例在跑（停止脚本会清理）。"""
-    if lock_path.exists():
-        print(f"已有实例运行（{lock_path}），本次退出。"
-              f"如确认没有实例，删除该文件后重试。")
+def _pid_alive(pid: int) -> bool:
+    """Windows 下探测锁文件里的 PID 是否还是个活着的 python 进程
+    （PID 会被系统复用——两天前死掉的实例号被别的程序顶上，必须验进程名）。"""
+    if pid <= 0:
         return False
+    try:
+        import ctypes
+
+        SYNCHRONIZE = 0x00100000
+        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not h:
+            return False
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            size = ctypes.c_ulong(512)
+            ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf,
+                                                                   ctypes.byref(size))
+            name = buf.value.replace("/", "\\").rsplit("\\", 1)[-1].lower() if ok else ""
+            return name.startswith("python")
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:
+        return True    # 判不了时保守当作活着，避免误双开
+
+
+def acquire_lock(lock_path: Path) -> bool:
+    """单实例保护：锁文件记录上个实例 PID，进程死了自动接管（防一次异常死亡永久瘫痪）。"""
+    if lock_path.exists():
+        try:
+            old_pid = int(lock_path.read_text(encoding="utf-8").strip() or 0)
+        except Exception:
+            old_pid = 0
+        if _pid_alive(old_pid):
+            print(f"已有实例运行（PID {old_pid}，{lock_path}），本次退出。"
+                  f"如确认没有实例，删除该文件后重试。")
+            return False
+        print(f"发现残留锁（PID {old_pid} 已不在），自动接管。")
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
     return True
 
@@ -344,6 +375,16 @@ def main() -> None:
     args = ap.parse_args()
 
     setup_logging(args.verbose)
+    # 崩溃黑匣子：pythonw 下 stderr 丢失，未捕获异常原先无声蒸发（本次排查即深受其害）
+    sys.excepthook = lambda t, v, tb: log.exception("未捕获异常", exc_info=(t, v, tb))
+
+    def _thread_hook(a) -> None:
+        if issubclass(a.exc_type, SystemExit):
+            return
+        log.exception("线程 %s 未捕获异常",
+                      a.thread.name if a.thread else "?",
+                      exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+    threading.excepthook = _thread_hook
     cfg = load_config(Path(args.config))
     lock_path = Path(__file__).parent / "daemon.lock"
     if not acquire_lock(lock_path):
