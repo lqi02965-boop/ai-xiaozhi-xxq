@@ -7,6 +7,7 @@
  */
 #include "cdc_link.h"
 #include "i2s_player.h"
+#include "mic_in.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -18,7 +19,7 @@
 static const char *TAG = "cdc_link";
 
 #define CDC_RX_BUF_SIZE  4096   /* USB-Serial-JTAG 硬件 FIFO 仅 128B，靠驱动环形缓冲吸收突发 */
-#define CDC_TX_BUF_SIZE  1024
+#define CDC_TX_BUF_SIZE  4096   /* mic_data 单帧 ~2.7KB，1024 会逼 write_bytes 跨超时拆写 */
 #define CDC_LINE_MAX     512
 #define CDC_RAW_STALE_MS 3000   /* 音频流卡死自救：3 秒没字节就放弃并恢复通道 */
 
@@ -34,24 +35,24 @@ static size_t s_chunk_used = 0;
 static size_t s_pcm_len = 0;
 static char s_acc[CDC_LINE_MAX + 1];   /* JSON 行缓冲（提升到文件级，audio_start 需清空） */
 static size_t s_acc_len = 0;
+static SemaphoreHandle_t s_tx_mux;     /* 多任务并发写 CDC 的互斥（mic 任务 / 指令应答） */
 
 /* ---------- 发送 ---------- */
 
-static void cdc_send_obj(cJSON *obj)
+/* 写满全部字节：write_bytes 单次调用超时即返回已写数，必须循环补齐。
+ * mic_data 单帧 ~2.7KB > TX 缓冲，不循环就只剩前 1KB（实测零帧到达的根因）。 */
+static void cdc_write_all(const char *data, size_t len)
 {
-    if (!obj) {
-        return;
+    size_t off = 0;
+    while (off < len) {
+        int w = usb_serial_jtag_write_bytes(data + off, len - off,
+                                            pdMS_TO_TICKS(500));
+        if (w <= 0) {
+            ESP_LOGW(TAG, "CDC TX 停滞，放弃 %u 字节", (unsigned)(len - off));
+            return;
+        }
+        off += (size_t)w;
     }
-    char *line = cJSON_PrintUnformatted(obj);
-    cJSON_Delete(obj);
-    if (!line) {
-        return;
-    }
-    size_t len = strlen(line);
-    usb_serial_jtag_write_bytes((const char *)line, len, pdMS_TO_TICKS(200));
-    usb_serial_jtag_write_bytes("\n", 1, pdMS_TO_TICKS(100));
-    ESP_LOGD(TAG, "TX: %s", line);
-    cJSON_free(line);
 }
 
 /* 带 seq 的通用帧：{"v":1,"type":T,"seq":N,"data":{...}} */
@@ -66,7 +67,19 @@ static void cdc_send_frame(const char *type, cJSON *data)
     } else {
         cJSON_AddItemToObject(obj, "data", cJSON_CreateObject());
     }
-    cdc_send_obj(obj);
+    char *line = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    if (!line) {
+        return;
+    }
+    size_t len = strlen(line);
+    if (s_tx_mux && xSemaphoreTake(s_tx_mux, pdMS_TO_TICKS(500)) == pdTRUE) {
+        cdc_write_all(line, len);
+        cdc_write_all("\n", 1);
+        xSemaphoreGive(s_tx_mux);
+    }
+    ESP_LOGD(TAG, "TX: %s", line);
+    cJSON_free(line);
 }
 
 /* ack / error 统一封装 */
@@ -76,6 +89,12 @@ static void cdc_send_ack(int ref_seq, bool ok)
     cJSON_AddNumberToObject(data, "ref_seq", ref_seq);
     cJSON_AddBoolToObject(data, "ok", ok);
     cdc_send_frame("ack", data);
+}
+
+/* v1.6：设备侧主动事件帧（mic_data 等任务上下文调用，与指令应答共用发送口） */
+void cdc_send_event(const char *type, cJSON *data)
+{
+    cdc_send_frame(type, data);
 }
 
 static void cdc_send_error(int ref_seq, int code, const char *msg)
@@ -165,12 +184,30 @@ static void handle_line(const char *line)
     } else if (strcmp(type->valuestring, "audio_stop") == 0) {
         i2s_player_abort();
         cdc_send_ack(peer_seq, true);
+    } else if (strcmp(type->valuestring, "mic_start") == 0) {
+        const cJSON *data = cJSON_GetObjectItem(root, "data");
+        const cJSON *sr = data ? cJSON_GetObjectItem(data, "sr") : NULL;
+        const cJSON *shift = data ? cJSON_GetObjectItem(data, "shift") : NULL;
+        if (mic_in_busy()) {
+            cdc_send_error(peer_seq, 403, "mic busy");
+            return;
+        }
+        if (mic_in_start(cJSON_IsNumber(sr) ? (int)sr->valuedouble : 16000,
+                         cJSON_IsNumber(shift) ? (int)shift->valuedouble : 12) != ESP_OK) {
+            cdc_send_error(peer_seq, 403, "mic start failed");
+            return;
+        }
+        cdc_send_ack(peer_seq, true);
+    } else if (strcmp(type->valuestring, "mic_stop") == 0) {
+        mic_in_stop();
+        cdc_send_ack(peer_seq, true);
     } else if (strcmp(type->valuestring, "status") == 0) {
         cJSON *data = cJSON_CreateObject();
         cJSON_AddStringToObject(data, "state", "idle");
         cJSON_AddNumberToObject(data, "uptime_s", xTaskGetTickCount() / configTICK_RATE_HZ);
         cJSON_AddStringToObject(data, "fw", FW_VERSION);
         cJSON_AddNumberToObject(data, "proto", 1);
+        cJSON_AddBoolToObject(data, "mic", mic_in_busy());
         cdc_send_frame("status", data);
     } else {
         ESP_LOGW(TAG, "unknown type: %s", type->valuestring);
@@ -266,6 +303,7 @@ static void cdc_rx_task(void *arg)
 
 int cdc_link_start(void)
 {
+    s_tx_mux = xSemaphoreCreateMutex();
     usb_serial_jtag_driver_config_t cfg = {
         .rx_buffer_size = CDC_RX_BUF_SIZE,
         .tx_buffer_size = CDC_TX_BUF_SIZE,

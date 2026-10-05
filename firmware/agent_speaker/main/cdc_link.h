@@ -13,10 +13,16 @@
 #ifndef _CDC_LINK_H_
 #define _CDC_LINK_H_
 
+#include <cJSON.h>
+
 /* 固件版本：status 指令回传用；main.c 的启动横幅也引用它 */
-#define FW_VERSION "v1.0.0-m1-audio"
+#define FW_VERSION "v1.6.0-mic"
 
 /* 创建 CDC 接收任务并安装驱动；非阻塞，失败时打日志返回错误码 */
 int cdc_link_start(void);
+
+/* v1.6：设备侧主动事件帧（如 mic_in 的 mic_data）。type=帧类型，data=载荷
+ * （所有权移交，可为 NULL）。可在任意任务上下文调用。 */
+void cdc_send_event(const char *type, cJSON *data);
 
 #endif /* _CDC_LINK_H_ */
