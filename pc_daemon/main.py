@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .agent_monitor import AgentMonitor, ApprovalWatcher
 from .agent_scan import scan as scan_agents_fs
-from .events import SKIP, EventBus
+from .events import AgentEvent, SKIP, EventBus
 from .prompt_engine import PromptEngine
 from .serial_bridge import SerialBridge
 from .tts import TTSEngine
@@ -440,6 +440,12 @@ def main() -> None:
                           use_llm=cfg.get("llm_for_phrases", False))
     tts = TTSEngine(cfg.get("tts", {})) if cfg.get("tts", {}).get("enabled", True) else None
     bridge = SerialBridge(cfg["serial"], dry_run=args.dry_run or args.demo)
+
+    # 板子主动事件（超声波靠近等）→ 事件总线：靠近问候播报
+    def _on_board_event(cm: int) -> None:
+        bus.put(AgentEvent(kind="near", agent="board", session_id="",
+                           detail=f"{cm}cm"))
+    bridge.on_board_event = _on_board_event
 
     monitors = []
     for name, acfg in cfg.get("agents", {}).items():

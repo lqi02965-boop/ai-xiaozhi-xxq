@@ -9,6 +9,7 @@
 #include "i2s_player.h"
 #include "mic_in.h"
 #include "oled_display.h"
+#include "ultra.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -214,6 +215,7 @@ static void handle_line(const char *line)
         cJSON_AddNumberToObject(data, "proto", 1);
         cJSON_AddBoolToObject(data, "mic", mic_in_busy());
         cJSON_AddBoolToObject(data, "oled", oled_ready());
+        cJSON_AddNumberToObject(data, "dist", ultra_last_cm());
         cdc_send_frame("status", data);
     } else {
         ESP_LOGW(TAG, "unknown type: %s", type->valuestring);

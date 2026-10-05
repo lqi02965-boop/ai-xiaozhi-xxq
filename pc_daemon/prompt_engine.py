@@ -46,6 +46,11 @@ LOCAL_PHRASES: dict[str, dict[str, list[str]]] = {
             "需要你审批，去看看再走。",
             "有个确认框等你，别走远。",
         ],
+        "near": [
+            "你回来啦，我一直在这儿。",
+            "欢迎回来，想我了没。",
+            "咦，你凑过来了，有事吩咐。",
+        ],
     },
     "御姐": {
         "done": [
@@ -137,6 +142,8 @@ class PromptEngine:
     # ---- 对外 ------------------------------------------------------------
     def gen(self, event: AgentEvent) -> str:
         self._refresh_library()   # 每次事件先热加载词库（mtime 未变则零开销）
+        if event.kind == "near":  # 靠近问候走本地词库（LLM 会傻乎乎点名 board）
+            return self._gen_local(event)
         # 默认直接用词库随机短语（零 token）；use_llm=true 时才走 LLM 链
         if not self.use_llm:
             return self._gen_local(event)
@@ -202,13 +209,14 @@ class PromptEngine:
 
     def _gen_local(self, event: AgentEvent) -> str:
         # 播报词库段名（中文）↔ 事件种类（英文）映射
-        section = {"done": "完成", "error": "报错", "approval": "审批提醒"}.get(
-            event.kind, event.kind)
+        section = {"done": "完成", "error": "报错", "approval": "审批提醒",
+                   "near": "靠近"}.get(event.kind, event.kind)
         pool = self._lib_tone.get(section) or self._phrases.get(event.kind)
         text = random.choice(pool or ["{agent}有新消息！"])
         text = text.replace("{agent}", event.agent or "")       # 词库可写 {agent} 占位
         # 词里没点名 agent 就补上（审批词常已自带，含名字则不重复）
-        if event.agent and event.agent not in text:
+        # 靠近问候是云小小自己的话，不点名 agent；其余事件补名（含名字不重复）
+        if event.agent and event.kind != "near" and event.agent not in text:
             text = f"{event.agent} {text}"
         return text
 

@@ -19,6 +19,7 @@
 #include "cdc_link.h"
 #include "i2s_player.h"
 #include "oled_display.h"
+#include "ultra.h"
 
 static const char *TAG = "agent_speaker";
 
@@ -44,6 +45,8 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "OLED 未就绪（I2C 无设备？不影响语音功能）");
     }
+    /* V1.6：HC-SR04 超声波（未接线安全：测量超时 -1，不上报） */
+    ultra_start();
     /* 启动 USB-CDC 指令通道（V1-105）：PC 可发 ping/play_sound/status */
     if (cdc_link_start() != ESP_OK) {
         ESP_LOGE(TAG, "CDC 通道启动失败");

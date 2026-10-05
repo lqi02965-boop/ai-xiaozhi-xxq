@@ -30,7 +30,8 @@ class SerialBridge:
         self._mic_active = False
         self._mic_buf = bytearray()
         self._mic_lock = threading.Lock()
-        self._rx_tail = b""                 # 会话内半行残留
+        self._rx_tail = b""
+        self.on_board_event = None          # 板子主动事件回调（dist 靠近等）                 # 会话内半行残留
 
     # ---- 板麦采集 ---------------------------------------------------------
     def mic_begin(self, sample_rate: int = 16000, shift: int = 14) -> None:
@@ -53,15 +54,23 @@ class SerialBridge:
         return data
 
     def _handle_board_line(self, line: bytes) -> None:
-        """解析设备上行帧：mic_data 缓存 PCM，其余（pong/ack）忽略。"""
-        if not self._mic_active:
-            return
+        """解析设备上行帧：mic_data 缓存 PCM，dist 转回调，其余忽略。"""
         line = line.strip()
         if not line.startswith(b"{"):
             return
         try:
             frame = json.loads(line.decode("utf-8", "replace"))
         except json.JSONDecodeError:
+            return
+        if frame.get("type") == "dist":
+            cm = frame.get("data", {}).get("cm")
+            if self.on_board_event and isinstance(cm, (int, float)):
+                try:
+                    self.on_board_event(int(cm))
+                except Exception:
+                    log.exception("dist 回调异常")
+            return
+        if not self._mic_active:
             return
         if frame.get("type") != "mic_data":
             return

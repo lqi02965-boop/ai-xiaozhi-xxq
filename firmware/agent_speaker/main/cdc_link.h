@@ -16,7 +16,7 @@
 #include <cJSON.h>
 
 /* 固件版本：status 指令回传用；main.c 的启动横幅也引用它 */
-#define FW_VERSION "v1.6.0-mic"
+#define FW_VERSION "v1.6.2-dist"
 
 /* 创建 CDC 接收任务并安装驱动；非阻塞，失败时打日志返回错误码 */
 int cdc_link_start(void);
