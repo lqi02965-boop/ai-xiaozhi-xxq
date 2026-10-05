@@ -12,10 +12,17 @@
     "dsh": {
       "name": "dsh",
       "log_dir": "C:\\Users\\是祺啊\\.dsh\\sessions",
-      "pattern": "**/*.jsonl.zstd",
-      "event_field": "event",
-      "event_match": {},
-      "detail_field": ""
+      "log_pattern": "**/*.jsonl.zstd",
+      "event_field": "type",
+      "event_match": {
+        "done": ["turn/end"],
+        "error": ["turn/end"]
+      },
+      "data_match": {
+        "done": {"data.reason.kind": ["completed"]},
+        "error": {"data.reason.kind": ["error"]}
+      },
+      "detail_field": "data"
     }
   },
   "llm": [
@@ -64,7 +71,7 @@
   },
   "llm_for_phrases": false,
   "prompt_library": "D:/esp/esp32/实战项目/人工智能小智/10-播报词库.md",
-  "audio_output": "device",
+  "audio_output": "pc",
   "tts": {
     "enabled": true,
     "edge_voice": "zh-CN-XiaoxiaoNeural",

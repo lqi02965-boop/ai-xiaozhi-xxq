@@ -47,6 +47,58 @@ class _FileCursor:
         return data.splitlines()
 
 
+class _ZstdCursor:
+    """zstd 压缩日志的游标（DSH session.v4.jsonl.zstd）。
+
+    zstd 不支持追加，DSH 每次保存都是整文件重写 → 用「解压后行数」当游标：
+    mtime/size 变了就整包解压，只取新增的行。文件行数变少视为重开，从头再来
+    （重复行有冷却兜底，不会连报）。
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.sig = None          # (mtime_ns, size)
+        self.lines_seen = 0
+
+    def read_new_lines(self) -> list[str]:
+        try:
+            st = self.path.stat()
+        except OSError:
+            return []
+        sig = (st.st_mtime_ns, st.st_size)
+        if self.sig is None:
+            # 首见：只记基线不回放历史（与 _FileCursor 的 offset=size 同语义），
+            # 否则守护进程每次启动都会把所有会话的历史事件播报一遍
+            self.sig = sig
+            try:
+                import zstandard
+
+                with open(self.path, "rb") as f:
+                    raw = zstandard.ZstdDecompressor().stream_reader(f).read()
+                self.lines_seen = len(raw.decode("utf-8", "replace").splitlines())
+            except Exception:
+                log.exception("zstd 基线读取失败: %s", self.path)
+                self.lines_seen = 0
+            return []
+        if sig == self.sig:
+            return []
+        self.sig = sig
+        try:
+            import zstandard
+
+            with open(self.path, "rb") as f:
+                raw = zstandard.ZstdDecompressor().stream_reader(f).read()
+            lines = raw.decode("utf-8", "replace").splitlines()
+        except Exception:
+            log.exception("zstd 解压失败: %s", self.path)
+            return []
+        if len(lines) < self.lines_seen:    # 文件被重写成更短的版本 → 从头读
+            self.lines_seen = 0
+        new = lines[self.lines_seen:]
+        self.lines_seen = len(lines)
+        return new
+
+
 class ApprovalWatcher(threading.Thread):
     """审批/提问等待监控（轮询 ZCode 的 db.sqlite part 表）。
 
@@ -143,6 +195,7 @@ class AgentMonitor(threading.Thread):
         self.event_field = acfg.get("event_field", "event")
         self.session_field = acfg.get("session_field", "sessionId")
         self.event_match = acfg.get("event_match") or {}    # {kind: [事件值子串]}
+        self.data_match = acfg.get("data_match") or {}      # {kind: {字段点路径: [允许值]}}
         self.detail_field = acfg.get("detail_field", "")
         self.bus = bus
         self.poll_interval = poll_interval
@@ -156,20 +209,39 @@ class AgentMonitor(threading.Thread):
     def stop(self) -> None:
         self._stop.set()
 
+    @staticmethod
+    def _dig(rec: dict, path: str):
+        """按点路径取嵌套字段（data.reason.kind → rec['data']['reason']['kind']）。"""
+        cur = rec
+        for part in path.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return None
+        return cur
+
     # ---- 事件规则 -------------------------------------------------------
     def _classify(self, rec: dict) -> tuple[str, str] | None:
         """返回 (kind, detail)；不关心的事件返回 None。
 
-        数据驱动模式（workbuddy 等）：event_match 命中即报。
+        数据驱动模式（workbuddy / dsh 等）：event_match 命中即候选，
+        data_match 可选地对嵌套字段做值校验（如 turn/end 的 reason.kind）。
         zcode 型（默认规则）：turn.completed→done、error 级→报错；
         用户要求（2026-09-27）：只提醒「最终任务完成 / 报错」，轮询小任务不提醒。
         """
         ev = rec.get(self.event_field, "")
         if self.event_match:
             for kind, patterns in self.event_match.items():
-                if any(p in ev for p in patterns):
-                    detail = str(rec.get(self.detail_field, "") or ev)[:80]
-                    return kind, detail
+                if not any(p in ev for p in patterns):
+                    continue
+                dm = self.data_match.get(kind)
+                if dm:
+                    ok = all(str(self._dig(rec, path)) in (vals if isinstance(vals, list) else [vals])
+                             for path, vals in dm.items())
+                    if not ok:
+                        continue    # 事件值命中但数据条件不符（如 aborted 的 turn/end）
+                detail = str(rec.get(self.detail_field, "") or ev)[:80]
+                return kind, detail
             return None
         if ev == "turn.completed":
             return "done", f"{rec.get('sessionId', '')[:13]} 一轮任务完成"
@@ -213,7 +285,8 @@ class AgentMonitor(threading.Thread):
         for gone in set(self._cursors) - files:
             self._cursors.pop(gone, None)
         for path in files:
-            cur = self._cursors.setdefault(path, _FileCursor(path))
+            cls = _ZstdCursor if path.suffix == ".zstd" else _FileCursor
+            cur = self._cursors.setdefault(path, cls(path))
             for line in cur.read_new_lines():
                 line = line.strip()
                 if not line:
