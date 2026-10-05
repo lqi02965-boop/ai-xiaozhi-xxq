@@ -300,12 +300,22 @@ class ChatUI:
 
     # ---------- Agent 管理器窗口 ----------
     def open_agents_window(self) -> None:
-        """弹出 Agent 管理器：自动扫描 + 列表 + 启用/停用/添加。"""
+        """弹出 Agent 配置窗口（模态，可反复开关）：勾选要盯的 Agent → ✅确认统一生效。"""
         win = getattr(self, "_agents_win", None)
-        if win is not None and win.winfo_exists():
-            win.lift()
-            return
-        self._agents_win = AgentsWindow(self.root, self)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.deiconify()
+                    win.lift()
+                    return
+            except Exception:
+                pass
+            self._agents_win = None
+        try:
+            self._agents_win = AgentsWindow(self.root, self)
+        except Exception:
+            log.exception("Agent 配置窗口打开失败")   # pythonw 下 stderr 会丢，必须留痕
+            self._set_status("⚠️ Agent 窗口打开失败，见 companion_ui.log")
 
     # ---------- 复制功能 ----------
     def _show_ctx_menu(self, event) -> None:
@@ -486,55 +496,107 @@ def main() -> None:
             pass
 
 
-class AgentsWindow:
-    """Agent 管理器窗口：自动扫描 + 列表 + 启用/停用/添加自定义。"""
+class AgentsWindow(tk.Toplevel):
+    """Agent 配置窗口（模态）：点「监视」列勾选 → ✅确认后统一生效。
+
+    v1.7 重做交互：原版二次点击打不开（把 AgentsWindow 实例当 widget 调
+    winfo_exists，AttributeError 在 pythonw 里无声蒸发）；现直接继承 Toplevel，
+    关闭时自动清引用，可反复开关。勾选只暂存，确认才批量下发。
+    """
 
     def __init__(self, root: tk.Tk, ui) -> None:
+        super().__init__(root)
         self.ui = ui
-        self.win = tk.Toplevel(root)
-        self.win.title("🍋 Agent 管理器")
-        self.win.geometry("640x430")
-        self.win.minsize(560, 380)
-        self.win.configure(bg="#FFFDF5")
-        apply_app_icon(self.win)
-        self.rows = {}
+        self.title("🍋 Agent 配置")
+        self.geometry("680x470")
+        self.minsize(580, 400)
+        self.configure(bg="#FFFDF5")
+        apply_app_icon(self)
+        self.rows = {}             # name → {"info": 扫描结果, "staged": 勾选状态}
 
-        head = tk.Frame(self.win, bg="#FFFDF5")
+        head = tk.Frame(self, bg="#FFFDF5")
         head.pack(fill="x", padx=8, pady=(8, 2))
-        tk.Label(head, text="自动扫描电脑上已安装的 AI Agent，选中后可启用监视 🍋",
+        tk.Label(head, text="点「监视」列勾选要盯梢的 Agent，✅确认后统一生效 🍋",
                  fg="#9E9D24", bg="#FFFDF5").pack(side="left")
 
-        bar = tk.Frame(self.win, bg="#FFFDF5")
+        bar = tk.Frame(self, bg="#FFFDF5")
         bar.pack(fill="x", padx=8, pady=2)
-        tk.Button(bar, text="🔄 重新扫描", width=12,
+        tk.Button(bar, text="🔄 重新扫描", width=12, relief="flat", bd=0,
+                  bg="#FFF8E1", fg="#8D6E63", cursor="hand2",
                   command=self.refresh).pack(side="left")
-        tk.Button(bar, text="✅ 启用监视", width=12,
-                  command=self.enable_selected).pack(side="left", padx=6)
-        tk.Button(bar, text="⏹ 停用", width=8,
-                  command=self.disable_selected).pack(side="left")
-        tk.Button(bar, text="➕ 添加自定义", width=12,
-                  command=self.add_custom).pack(side="right")
+        tk.Button(bar, text="➕ 添加自定义", width=12, relief="flat", bd=0,
+                  bg="#FFF8E1", fg="#8D6E63", cursor="hand2",
+                  command=self.add_custom).pack(side="left", padx=6)
+        tk.Button(bar, text="✅ 确认配置", width=14, relief="flat", bd=0,
+                  bg=self.ui.C_POMELO, fg="#5D4037", cursor="hand2",
+                  activebackground=self.ui.C_LEMON,
+                  font=("微软雅黑", 10, "bold"),
+                  command=self.confirm).pack(side="right")
 
-        cols = ("name", "desc", "detected", "log_ready", "monitored")
-        style = ttk.Style(self.win)
+        cols = ("name", "desc", "detected", "log_ready", "staged")
+        style = ttk.Style(self)
         style.configure("Lemon.Treeview", rowheight=28, background="#FFFEF7",
                         fieldbackground="#FFFEF7", foreground="#37474F")
         style.configure("Lemon.Treeview.Heading", background="#FFF59D",
                         foreground="#5D4037")
-        self.tree = ttk.Treeview(self.win, columns=cols, show="headings", height=12,
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12,
                                  style="Lemon.Treeview")
-        for cid, text, w in (("name", "Agent", 90), ("desc", "说明", 190),
+        for cid, text, w in (("name", "Agent", 100), ("desc", "说明", 200),
                              ("detected", "已安装", 60), ("log_ready", "日志就绪", 70),
-                             ("monitored", "监视中", 60)):
+                             ("staged", "监视(点切换)", 110)):
             self.tree.heading(cid, text=text)
             self.tree.column(cid, width=w, anchor="center")
         self.tree.pack(fill="both", expand=True, padx=8, pady=4)
+        self.tree.bind("<Button-1>", self._on_click)
+        self.tree.bind("<Double-1>", self._on_double)
 
-        self.status = tk.Label(self.win, text="🍋 选中一行后可启用/停用；"
-                               "“➕添加自定义”可接入任意有日志的 Agent",
-                               fg="#9E9D24", bg="#FFFDF5")
-        self.status.pack(anchor="w", padx=8, pady=(0, 6))
+        self.status = tk.Label(self, text="扫描中…", fg="#9E9D24", bg="#FFFDF5",
+                               anchor="w")
+        self.status.pack(fill="x", padx=8, pady=(0, 6))
+
+        self.bind("<Destroy>", self._on_destroy)
+        self.grab_set()
         self.refresh()
+
+    # ---- 勾选（只暂存，不立即下发） ----
+    def _toggle(self, iid: str) -> None:
+        row = self.rows.get(iid)
+        if not row:
+            return
+        if row["staged"] is False and not row["info"].get("log_ready"):
+            self._set_status(f"{iid} 的日志目录不存在，无法启用", ok=False)
+            return
+        row["staged"] = not row["staged"]
+        self.tree.set(iid, "staged", "☑" if row["staged"] else "☐")
+        self._show_pending()
+
+    def _on_click(self, event) -> None:
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) == "#5":   # 只点「监视」列才切换
+            self._toggle(self.tree.identify_row(event.y))
+
+    def _on_double(self, event) -> None:
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            self._toggle(iid)
+
+    def _pending(self) -> tuple[list, list]:
+        to_enable = [n for n, r in self.rows.items()
+                     if r["staged"] and not r["info"].get("monitored")]
+        to_disable = [n for n, r in self.rows.items()
+                      if not r["staged"] and r["info"].get("monitored")]
+        return to_enable, to_disable
+
+    def _show_pending(self) -> None:
+        to_enable, to_disable = self._pending()
+        parts = []
+        if to_enable:
+            parts.append("将启用：" + "、".join(to_enable))
+        if to_disable:
+            parts.append("将停用：" + "、".join(to_disable))
+        self._set_status("｜".join(parts) + "（按 ✅ 确认配置生效）" if parts
+                         else "勾选没变化；点「监视」列可增减，✅ 确认后生效")
 
     def _set_status(self, text: str, ok: bool = True) -> None:
         self.status.config(text=text, fg="#0a7a4a" if ok else "#a03030")
@@ -548,48 +610,48 @@ class AgentsWindow:
             return
         for a in resp.get("agents", []):
             name = a["name"]
-            self.rows[name] = a
+            staged = bool(a.get("monitored"))
+            self.rows[name] = {"info": a, "staged": staged}
             self.tree.insert("", "end", iid=name, values=(
                 name, a.get("desc", ""), "✅" if a.get("detected") else "—",
                 "✅" if a.get("log_ready") else "—",
-                "✅ 监视中" if a.get("monitored") else "—"))
+                "☑" if staged else "☐"))
+        self._show_pending()
 
-    def _selected(self):
-        sel = self.tree.selection()
-        return self.rows.get(sel[0]) if sel else None
+    # ---- 确认：把勾选差异批量下发给守护进程 ----
+    def confirm(self) -> None:
+        to_enable, to_disable = self._pending()
+        if not to_enable and not to_disable:
+            self._set_status("配置无变化，窗口即将关闭")
+            self.after(700, self.destroy)
+            return
+        ok, fail = [], []
+        for n in to_enable:
+            info = self.rows[n]["info"]
+            if not info.get("log_ready"):
+                fail.append(f"{n}(日志目录不存在)")
+                continue
+            payload = {k: info.get(k) for k in ("name", "log_dir", "pattern",
+                                                "event_field", "event_match",
+                                                "detail_field")}
+            resp = self.ui._monitor_cmd("add_agent", agent=payload)
+            (ok if resp and resp.get("ok") else fail).append(n)
+        for n in to_disable:
+            resp = self.ui._monitor_cmd("remove_agent", name=n)
+            (ok if resp and resp.get("ok") else fail).append(n + "⏹")
+        if fail:
+            self._set_status("❌ 失败：" + "、".join(fail), ok=False)
+            return
+        self._set_status("✅ 配置完成：" + "、".join(ok) + "，窗口即将关闭")
+        self.after(1300, self.destroy)
 
-    def enable_selected(self) -> None:
-        row = self._selected()
-        if not row:
-            self._set_status("先选中一行 Agent", ok=False)
-            return
-        if not row.get("log_ready"):
-            self._set_status(f"{row['name']} 的日志目录不存在，无法启用", ok=False)
-            return
-        payload = {k: row.get(k) for k in ("name", "log_dir", "pattern",
-                                           "event_field", "event_match",
-                                           "detail_field")}
-        resp = self.ui._monitor_cmd("add_agent", agent=payload)
-        if resp and resp.get("ok"):
-            self.refresh()
-            self._set_status(f"✅ 已启用 {row['name']} 监视")
-        else:
-            self._set_status("启用失败（守护进程未连接或已存在）", ok=False)
-
-    def disable_selected(self) -> None:
-        row = self._selected()
-        if not row:
-            self._set_status("先选中一行 Agent", ok=False)
-            return
-        resp = self.ui._monitor_cmd("remove_agent", name=row["name"])
-        if resp and resp.get("ok"):
-            self.refresh()
-            self._set_status(f"⏹ 已停用 {row['name']} 监视")
-        else:
-            self._set_status("停用失败", ok=False)
+    # ---- 关闭时清引用，保证按钮可反复打开 ----
+    def _on_destroy(self, event) -> None:
+        if event.widget is self and getattr(self.ui, "_agents_win", None) is self:
+            self.ui._agents_win = None
 
     def add_custom(self) -> None:
-        form = tk.Toplevel(self.win)
+        form = tk.Toplevel(self)
         form.title("添加自定义 Agent")
         form.geometry("460x180")
         form.grab_set()
@@ -613,6 +675,7 @@ class AgentsWindow:
                 "name": name, "log_dir": log_dir,
                 "log_pattern": e_pat.get().strip() or "*.jsonl"})
             form.destroy()
+            self.grab_set()          # 子窗关闭后把模态焦点收回主配置窗
             if resp and resp.get("ok"):
                 self.refresh()
                 self._set_status(f"✅ 已添加自定义 Agent：{name}")

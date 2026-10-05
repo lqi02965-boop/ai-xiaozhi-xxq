@@ -20,6 +20,7 @@ log = logging.getLogger("prompt_engine")
 SYSTEM_PROMPT_TEMPLATE = (
     "你是桌面机器人云小小的播报词生成器。人设：{persona}。"
     "根据 Agent 工作事件，生成一句不超过20字的中文口语播报，"
+    "开头要提到是哪个 Agent（如 zcode/workbuddy），"
     "要有情绪、符合人设、不要引号和句号结尾。只输出这一句话。"
 )
 
@@ -41,7 +42,7 @@ LOCAL_PHRASES: dict[str, dict[str, list[str]]] = {
             "有点小意外，已记录，稍后处理。",
         ],
         "approval": [
-            "zcode 卡在审批了，过来点一下。",
+            "{agent} 卡在审批了，过来点一下。",
             "需要你审批，去看看再走。",
             "有个确认框等你，别走远。",
         ],
@@ -204,7 +205,12 @@ class PromptEngine:
         section = {"done": "完成", "error": "报错", "approval": "审批提醒"}.get(
             event.kind, event.kind)
         pool = self._lib_tone.get(section) or self._phrases.get(event.kind)
-        return random.choice(pool or ["我有新消息！"])
+        text = random.choice(pool or ["{agent}有新消息！"])
+        text = text.replace("{agent}", event.agent or "")       # 词库可写 {agent} 占位
+        # 词里没点名 agent 就补上（审批词常已自带，含名字则不重复）
+        if event.agent and event.agent not in text:
+            text = f"{event.agent} {text}"
+        return text
 
     def _clamp(self, text: str) -> str:
         text = text.replace("\n", " ").strip()
